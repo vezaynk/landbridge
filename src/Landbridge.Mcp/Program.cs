@@ -67,13 +67,11 @@ builder.Services.AddDashboard();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpContextAccessor();
 
-// OAuth 2.1 authorization-server support (§5). The operator verifier and CIMD
-// client are singletons: the verifier caches the configured passphrase hash, and
-// the CIMD client holds one SSRF-fenced HttpClient. The CIMD insecure flag relaxes
-// the https/private-host guard for dev/test loopback fetches only — off by default.
+// The operator verifier caches the configured passphrase hash. The authorization
+// server is its own host now (Landbridge.Auth), but this one still needs the
+// verifier: the dashboard's own login (§12) checks the same passphrase without
+// going through OAuth at all.
 builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
-builder.Services.AddSingleton<ICimdClient>(sp =>
-    new CimdClient(sp.GetRequiredService<IConfiguration>().GetValue<bool>(CimdClient.AllowInsecureKey)));
 
 // Opaque bearer tokens validated against the store (§5). Every MCP request
 // authenticates as its token's principal; a worker can only reach worker tools.
@@ -109,10 +107,10 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionEventFanout
 // event sink completes the waiter when the consumer reports its bound port.
 builder.Services.AddLandbridgeForwarding();
 
-// §13: the public MCP URL. OAuth issuer / dashboard / a human Lead stay on
-// PublicMcpUrl. Workers may need a different reachability (Aspire boxes in
-// Linux containers dial host.docker.internal); WorkerMcpUrl overrides only
-// the URL stamped onto dispatch / {mcp_url}. Unset, they are the same.
+// §13: the public MCP URL. The dashboard and a human Lead stay on PublicMcpUrl.
+// Workers may need a different reachability (Aspire boxes in Linux containers
+// dial host.docker.internal); WorkerMcpUrl overrides only the URL stamped onto
+// dispatch / {mcp_url}. Unset, they are the same.
 var publicMcpUrl = builder.Configuration["Landbridge:PublicMcpUrl"]
     ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PUBLIC_MCP_URL")
     ?? DispatchService.DefaultPublicMcpUrl;
@@ -120,10 +118,14 @@ var workerMcpUrl = builder.Configuration["Landbridge:WorkerMcpUrl"]
     ?? Environment.GetEnvironmentVariable("LANDBRIDGE_WORKER_MCP_URL")
     ?? publicMcpUrl;
 
-// The canonical OAuth identity (§5): resource id, issuer, and the two endpoint
-// URLs all derive from the same public URL, so the RFC 9728 challenge, the
-// well-known metadata documents, and authorize/token validation never disagree.
-builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(publicMcpUrl));
+// This host is the OAuth resource server (§5): PublicMcpUrl is the resource id a
+// token is minted for, and AuthUrl is the authorization server that mints it. The
+// same config object drives the RFC 9728 challenge and the protected-resource
+// document, so the 401 and the metadata cannot name different issuers. Unset,
+// AuthUrl falls back to the resource id — a single-host Instance, as before.
+var authUrl = builder.Configuration["Landbridge:AuthUrl"]
+    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_AUTH_URL");
+builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(publicMcpUrl, authUrl));
 
 // Plane-side permission classifier (argv allowlist, then destroy-guard, then
 // LLM). Unset URL or a down sidecar is Ask — never fail-open, never Deny.
@@ -303,12 +305,11 @@ app.MapPreviewConnectEndpoint();
 // token is the credential, validated by TokenService, not a Principal.
 app.MapEnrollmentEndpoints();
 
-// OAuth 2.1 authorization server (§5): the two anonymous well-known discovery
-// documents (RFC 9728 / RFC 8414) and the authorize + token endpoints. Together
-// with the RFC 9728 challenge on the MCP 401, these make the plane a real
-// authorization server whose completed flow mints the existing human session.
-app.MapOAuthMetadataEndpoints();
-app.MapOAuthEndpoints();
+// The resource server's discovery document (RFC 9728, anonymous). It names the
+// authorization server, which is what the RFC 9728 challenge on the MCP 401 sends
+// a client to read. The authorize/token endpoints and the RFC 8414 document are
+// Landbridge.Auth's; this host never serves them.
+app.MapOAuthResourceMetadata();
 
 app.Run();
 

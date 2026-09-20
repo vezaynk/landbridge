@@ -50,8 +50,10 @@ const string dockerHost = "host.docker.internal";
 // via localhost, get ::1 first, reach AirPlay instead of the plane, and read
 // its 403 as unhealthy. WaitFor(mcp) then never released. Binding `+` on 5050
 // (not an AirPlay port) lets both 127.0.0.1 and host.docker.internal work.
+const int authPort = 5055;
 const int mcpPort = 5050;
 var mcpUrl = $"http://{mcpHost}:{mcpPort}";
+var authUrl = $"http://{mcpHost}:{authPort}";
 var mcpListenUrl = $"http://+:{mcpPort}";
 var workerMcpUrl = $"http://{dockerHost}:{mcpPort}";
 
@@ -160,15 +162,36 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     // unchanged; dispatch injects WorkerMcpUrl into mcpServers / {mcp_url}.
     .WithEnvironment("Landbridge__PublicMcpUrl", mcpUrl)
     .WithEnvironment("Landbridge__WorkerMcpUrl", workerMcpUrl)
+    // §5: the authorization server is its own host. This is what the plane's
+    // protected-resource document names and its 401 challenge sends a client to.
+    .WithEnvironment("Landbridge__AuthUrl", authUrl)
     .WithEnvironment("Landbridge__Classifier__Url", "http://127.0.0.1:" + classifierPort)
     // §8.4 preview: the shared bearer the plane's /preview/connect + /preview/exchange
     // require, and the wildcard base the plane builds preview URLs onto (open_preview
     // + the dashboard mint read Landbridge:PreviewUrlBase).
     .WithEnvironment("Landbridge__PreviewConnect__Bearer", previewConnectBearer)
     .WithEnvironment("Landbridge__PreviewUrlBase", previewUrlBase)
-    // Dashboard / OAuth login: Development appsettings already hash the passphrase
+    // Dashboard login: Development appsettings already hash the passphrase
     // `dev`. Set it here too so an override of ASPNETCORE_ENVIRONMENT cannot
     // silently fail-close the only human door in this loop.
+    .WithEnvironment("Landbridge__Operator__PassphraseHash",
+        Landbridge.ControlPlane.Auth.OperatorPassphrase.Hash("dev"))
+    .WithHttpHealthCheck("/health");
+
+// The OAuth 2.1 authorization server (§5). Its own host: it is the only surface
+// that renders HTML to a human and fetches remote CIMD documents, and it mints
+// credentials without touching Apply or the registry. A browser dials it directly
+// during the flow, so — like the plane — it is un-proxied on a fixed loopback port
+// and its own URL is what RFC 8414 metadata must carry.
+builder.AddProject<Projects.Landbridge_Auth>("auth", options => options.ExcludeLaunchProfile = true)
+    .WithReference(landbridgeDb)
+    .WaitFor(mcp)
+    .WithHttpEndpoint(port: authPort, targetPort: authPort, isProxied: false)
+    .WithEnvironment("ASPNETCORE_URLS", authUrl)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
+    .WithEnvironment("Landbridge__AuthUrl", authUrl)
+    .WithEnvironment("Landbridge__PublicMcpUrl", mcpUrl)
+    // The same passphrase the dashboard checks, for the same reason.
     .WithEnvironment("Landbridge__Operator__PassphraseHash",
         Landbridge.ControlPlane.Auth.OperatorPassphrase.Hash("dev"))
     .WithHttpHealthCheck("/health");

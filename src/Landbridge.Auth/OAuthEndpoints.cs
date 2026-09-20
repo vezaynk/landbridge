@@ -4,14 +4,14 @@ using System.Text.Encodings.Web;
 using Landbridge.ControlPlane.Auth;
 using Microsoft.AspNetCore.WebUtilities;
 
-namespace Landbridge.Mcp;
+namespace Landbridge.Auth;
 
 /// <summary>
 /// The OAuth 2.1 authorization-code flow (spec §5): <c>/oauth/authorize</c> and
 /// <c>/oauth/token</c>, the front door a human — and an MCP client like Claude
 /// Code acting for one — walks through to obtain the existing opaque
 /// <c>lbr_h_</c> human session token. Plain anonymous HTTP in the narrow,
-/// non-MCP style of <see cref="EnrollmentEndpoints"/>; the endpoints are the
+/// non-MCP style of the enrollment endpoints; the endpoints are the
 /// transport shell and all the credential logic lives in the control-plane
 /// services (<see cref="OAuthAuthorizationCodeService"/>,
 /// <see cref="TokenService"/>, <see cref="IOperatorVerifier"/>,
