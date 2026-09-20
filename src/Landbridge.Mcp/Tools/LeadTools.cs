@@ -3,9 +3,11 @@ using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using static Landbridge.Mcp.Tools.ToolResults;
@@ -56,6 +58,18 @@ public sealed class LeadTools(
     /// rather than a bare authorization error, so the displaced session's harness
     /// does not invent an explanation for the denial.
     /// </summary>
+    private string? InboundBearer
+    {
+        get
+        {
+            var header = http.HttpContext?.Request.Headers.Authorization.ToString();
+            const string prefix = "Bearer ";
+            return header is { Length: > 0 } && header.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? header[prefix.Length..].Trim()
+                : null;
+        }
+    }
+
     private Principal.Lead LeadPrincipal
     {
         get
@@ -404,6 +418,14 @@ public sealed class LeadTools(
     public async Task<ProfileRoutingView> ListProfiles(CancellationToken ct)
     {
         _ = LeadPrincipal;
+        if (http.HttpContext?.RequestServices?.GetService<HubClient>() is { Enabled: true } hub
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var machines = await hub.GetAsync<List<HubMachine>>(
+                "/machines", bearer, ct);
+            if (machines is not null)
+                return RoutingFrom(machines);
+        }
 
         var view = await MachineLive.RoutingAsync(
             db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, ct);
@@ -421,6 +443,32 @@ public sealed class LeadTools(
                     : m).ToList(),
         }).ToList();
         return view with { Profiles = profiles };
+    }
+
+    private static ProfileRoutingView RoutingFrom(IReadOnlyList<HubMachine> machines)
+    {
+        var byProfile = new Dictionary<string, List<ProfileMachineView>>(StringComparer.Ordinal);
+        foreach (var machine in machines)
+        {
+            var view = new ProfileMachineView(
+                string.IsNullOrEmpty(machine.Slug) ? machine.Id.ToString("D") : machine.Slug,
+                machine.Live && machine.Ready, machine.UnderBackPressure, machine.LastSpokeAt,
+                machine.Name, machine.Os);
+            foreach (var profile in machine.Profiles)
+            {
+                if (!byProfile.TryGetValue(profile, out var list))
+                    byProfile[profile] = list = [];
+                list.Add(view);
+            }
+        }
+
+        var profiles = byProfile
+            .Select(p => new ProfileRoutingEntry(
+                p.Key, p.Value.Any(m => m.Ready),
+                p.Value.OrderBy(m => m.MachineId, StringComparer.Ordinal).ToList()))
+            .OrderBy(p => p.Profile, StringComparer.Ordinal)
+            .ToList();
+        return new ProfileRoutingView(profiles, machines.Count);
     }
 
     // ── The human path to a service (§8.3) ────────────────────────────────────
