@@ -60,7 +60,7 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         string? nonce = null;
         Assert.True(
             await FleetRig.WaitUntilAsync(
-                async () => (nonce = await rig.ReadMarkerAsync(TestMachineIds.For("A"), serve, "handshake-nonce.txt", ct)) is not null, Bound),
+                async () => (nonce = await rig.ReadMarkerAsync("A", serve, "handshake-nonce.txt", ct)) is not null, Bound),
             "machine A never wrote its handshake nonce marker");
 
         // B opens the forward, reads the nonce, and reports it.

@@ -256,7 +256,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             + await rig.RealWorkerDiagnosticsAsync(session, ct));
 
         var profile = RealHarnessProfiles.Claude(claudeBin);
-        var instances = rig.InstanceSessionIdsOn(TestMachineIds.For("A"), session, profile);
+        var instances = rig.InstanceSessionIdsOn("A", session, profile);
         Assert.NotEmpty(instances);
         Assert.Contains(firstSession, instances);
         Assert.Equal("A", rig.MachineRanOn(session));
@@ -315,7 +315,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // It is really running, as the machine itself reports it.
         Assert.True(
             await FleetRig.WaitUntilAsync(
-                () => Task.FromResult(rig.ProcessesOn(TestMachineIds.For("A")).Any(p => p.Name == processName && p.State == ProcessState.Running)),
+                () => Task.FromResult(rig.ProcessesOn("A").Any(p => p.Name == processName && p.State == ProcessState.Running)),
                 TimeSpan.FromSeconds(30)),
             "the machine never reported the agent-started process as running.\n"
             + await rig.RealWorkerDiagnosticsAsync(starter, ct));
@@ -325,7 +325,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         await rig.AcceptAsync(starter, ct);
         Assert.Equal(SessionState.Completed, await rig.StateAsync(starter, ct));
         Assert.Contains(
-            rig.ProcessesOn(TestMachineIds.For("A")),
+            rig.ProcessesOn("A"),
             p => p.Name == processName && p.State == ProcessState.Running);
 
         // Step 2: the cleanup worker — a different task, told no names — finds it and stops it.
@@ -338,7 +338,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var report = await rig.ResultReferenceAsync(cleaner, ct);
         Assert.Contains(processName, report);  // it discovered the right survivor, unaided
         Assert.Contains("exit=", report);      // and was told how it ended
-        Assert.DoesNotContain(processName, rig.ProcessesOn(TestMachineIds.For("A")).Select(p => p.Name));
+        Assert.DoesNotContain(processName, rig.ProcessesOn("A").Select(p => p.Name));
     }
 
     // ── §8.2/§8.3 a service one machine serves and another reaches ─────────────

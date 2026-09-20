@@ -498,11 +498,11 @@ internal sealed class FleetRig(
     /// the first's transcript — a cold start mints a new one.</para>
     /// </summary>
     public IReadOnlyList<string> InstanceSessionIdsOn(
-        Guid machineId, SessionId task, Func<string, string?>? sessionIdOfLine = null)
+        string alias, SessionId task, Func<string, string?>? sessionIdOfLine = null)
     {
         var extract = sessionIdOfLine ?? SessionIdOfInitLine;
         var dir = System.IO.Path.Combine(
-            _machines[machineId.ToString()].WorkRoot, TranscriptDefaults.DirName, task.ToString());
+            _machines[alias].WorkRoot, TranscriptDefaults.DirName, task.ToString());
         if (!System.IO.Directory.Exists(dir))
             return [];
 
@@ -526,10 +526,10 @@ internal sealed class FleetRig(
     /// earlier <c>session/update</c> id on the same instance file.
     /// </summary>
     public IReadOnlyList<string> InstanceSessionIdsOn(
-        Guid machineId, SessionId task, RealHarnessProfile profile)
+        string alias, SessionId task, RealHarnessProfile profile)
     {
         var dir = System.IO.Path.Combine(
-            _machines[machineId.ToString()].WorkRoot, TranscriptDefaults.DirName, task.ToString());
+            _machines[alias].WorkRoot, TranscriptDefaults.DirName, task.ToString());
         if (!System.IO.Directory.Exists(dir))
             return [];
 
@@ -625,8 +625,8 @@ internal sealed class FleetRig(
 
     /// <summary>What the machine reports it is running (§10) — the rig-side read behind
     /// <c>list_processes</c>, for assertions and diagnostics.</summary>
-    public IReadOnlyList<ProcessStatus> ProcessesOn(Guid machineId) =>
-        _machines[machineId.ToString()].Daemon.ReportProcesses();
+    public IReadOnlyList<ProcessStatus> ProcessesOn(string alias) =>
+        _machines[alias].Daemon.ReportProcesses();
 
     /// <summary>
     /// Beats every machine on a fixed cadence, as a real landbridged's heartbeat timer does.
@@ -1005,9 +1005,9 @@ internal sealed class FleetRig(
     }
 
     /// <summary>Read a collaborator marker from the machine's work dir for a task, or null.</summary>
-    public async Task<string?> ReadMarkerAsync(Guid machineId, SessionId task, string markerName, CancellationToken ct)
+    public async Task<string?> ReadMarkerAsync(string alias, SessionId task, string markerName, CancellationToken ct)
     {
-        var path = System.IO.Path.Combine(_machines[machineId.ToString()].WorkRoot, task.ToString(), markerName);
+        var path = System.IO.Path.Combine(_machines[alias].WorkRoot, task.ToString(), markerName);
         if (!System.IO.File.Exists(path))
             return null;
         try { return await System.IO.File.ReadAllTextAsync(path, ct); }
