@@ -54,14 +54,14 @@ public sealed class TranscriptRelayService(
     /// the same socket as dispatch and liveness, so two operators (or one refreshing) must
     /// not be able to multiply what it costs that machine.
     /// </summary>
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _perMachine = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _perMachine = new();
 
     /// <summary>
     /// What <paramref name="machine"/> holds for <paramref name="task"/>: the captured
     /// instances and each stream's size, or why nothing can be listed.
     /// </summary>
     public Task<TranscriptResult> ListAsync(
-        SessionId task, string machine, CancellationToken ct = default) =>
+        SessionId task, Guid machine, CancellationToken ct = default) =>
         AskAsync(task, machine, new ReadTranscriptCommand(task, NewRequestId(), Ordinal: 0), ct);
 
     /// <summary>
@@ -69,12 +69,12 @@ public sealed class TranscriptRelayService(
     /// reply returned (<see cref="TranscriptChunkEvent.NextOffset"/>); start at 0.
     /// </summary>
     public Task<TranscriptResult> ReadAsync(
-        SessionId task, string machine, int ordinal, string stream, long offset,
+        SessionId task, Guid machine, int ordinal, string stream, long offset,
         int maxBytes = TranscriptStreams.DefaultMaxBytes, CancellationToken ct = default) =>
         AskAsync(task, machine, new ReadTranscriptCommand(task, NewRequestId(), ordinal, stream, offset, maxBytes), ct);
 
     private async Task<TranscriptResult> AskAsync(
-        SessionId task, string machine, ReadTranscriptCommand command, CancellationToken ct)
+        SessionId task, Guid machine, ReadTranscriptCommand command, CancellationToken ct)
     {
         // The gate, before anything else: no state read of a machine, no command sent.
         using (var scope = scopes.CreateScope())
@@ -150,7 +150,7 @@ public sealed class TranscriptRelayService(
     /// <summary>Maps the machine's reply onto a caller-facing result. The machine's refusal
     /// vocabulary is turned into operator-facing sentences here; the plane never invents a
     /// reason of its own.</summary>
-    private static TranscriptResult Interpret(TranscriptChunkEvent reply, string machine) =>
+    private static TranscriptResult Interpret(TranscriptChunkEvent reply, Guid machine) =>
         reply.Refusal switch
         {
             null when reply.Instances is { } instances => new TranscriptResult.Inventory(machine, instances),
@@ -190,10 +190,10 @@ public abstract record TranscriptResult
     private TranscriptResult() { }
 
     /// <summary>What one machine holds for the task.</summary>
-    public sealed record Inventory(string Machine, IReadOnlyList<TranscriptInstance> Instances) : TranscriptResult;
+    public sealed record Inventory(Guid Machine, IReadOnlyList<TranscriptInstance> Instances) : TranscriptResult;
 
     /// <summary>One range of verbatim transcript text, with the cursor for the next read.</summary>
-    public sealed record Range(string Machine, string Text, long NextOffset, bool Eof) : TranscriptResult;
+    public sealed record Range(Guid Machine, string Text, long NextOffset, bool Eof) : TranscriptResult;
 
     /// <summary>Nothing could be read; <see cref="Detail"/> is operator-facing.</summary>
     public sealed record Unavailable(TranscriptUnavailable Reason, string Detail) : TranscriptResult;

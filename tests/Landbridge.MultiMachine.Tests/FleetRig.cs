@@ -78,22 +78,22 @@ internal sealed class FleetRig(
     private readonly Dictionary<string, MachineRig> _machines = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Guid> _enrolled = new(StringComparer.Ordinal);
 
-    private string Wire(string alias) => _enrolled[alias].ToString();
+    private Guid Wire(string alias) => _enrolled[alias];
 
     /// <summary>The enrolled <c>machines.id</c> for a fleet alias ("A", "B").
-    /// Registry keys, park.machine, and worker_instances.machine_id are this Guid
-    /// string, not the alias.</summary>
-    public string EnrolledId(string alias) => Wire(alias);
+    /// Registry keys, park.machine, and worker_instances.machine_id are this id,
+    /// not the alias.</summary>
+    public Guid EnrolledId(string alias) => Wire(alias);
 
     /// <summary>Map a wire machine id back to the fleet alias, or return the id
     /// unchanged when it was not enrolled here.</summary>
-    public string? AliasOf(string? machineId)
+    public string? AliasOf(Guid? machineId)
     {
-        if (machineId is null) return null;
-        foreach (var (alias, id) in _enrolled)
-            if (string.Equals(id.ToString(), machineId, StringComparison.OrdinalIgnoreCase))
+        if (machineId is not { } id) return null;
+        foreach (var (alias, enrolled) in _enrolled)
+            if (enrolled == id)
                 return alias;
-        return machineId;
+        return id.ToString();
     }
 
 
@@ -184,7 +184,7 @@ internal sealed class FleetRig(
     /// so a mixed fleet can run two ACP entry points (and two tool spellings)
     /// under one plane. Null keeps the fleet-wide profile.</para></summary>
     public async Task AddMachineAsync(
-        string machineId,
+        string alias,
         IReadOnlyList<string>? spawnArgv = null,
         string? prompt = null,
         string? followUp = null)
@@ -199,9 +199,9 @@ internal sealed class FleetRig(
             };
         await using (var db = pg.NewContext())
         {
-            _enrolled[machineId] = await TestMachines.EnrollAsync(db, TimeProvider.System, machineId);
+            _enrolled[alias] = await TestMachines.EnrollAsync(db, TimeProvider.System, alias);
         }
-        var wireId = _enrolled[machineId].ToString();
+        var wireId = _enrolled[alias];
         var workRoot = NewWorkRoot();
 
         var ring = new OutboundEventRing(capacity: 256);
@@ -219,17 +219,17 @@ internal sealed class FleetRig(
         // forward-only daemon it always had.
         var daemon = RealWorkerMode
             ? new DaemonHarness(
-                machineId, new SinkForwardingChannel(_sink),
+                alias, new SinkForwardingChannel(_sink),
                 workerSupervisor: supervisor,
                 workerConfig: new RunnerConfig(
                     machineConfig,
                     new Dictionary<string, ProfileConfig>(StringComparer.Ordinal) { ["default"] = profile }),
-                log: line => _machineLog.Enqueue($"[{machineId}] {line}"))
-            : new DaemonHarness(machineId, new SinkForwardingChannel(_sink));
+                log: line => _machineLog.Enqueue($"[{alias}] {line}"))
+            : new DaemonHarness(alias, new SinkForwardingChannel(_sink));
         await daemon.StartAsync();
 
-        var machine = new MachineRig(machineId, supervisor, workRoot, daemon, ring, profile);
-        _machines[machineId] = machine;
+        var machine = new MachineRig(alias, supervisor, workRoot, daemon, ring, profile);
+        _machines[alias] = machine;
 
         // Real-worker mode: drain this machine's worker-supervisor ring (started/exited)
         // into the plane's sink, so a worker that exits without reporting requeues its
@@ -296,9 +296,9 @@ internal sealed class FleetRig(
     /// Returns false when the machine is unreachable.
     /// </summary>
     public Task<bool> SendStopAsync(
-        string machineId, SessionId task, TimeSpan ttl, StopDisposition disposition, string? reason,
+        Guid machineId, SessionId task, TimeSpan ttl, StopDisposition disposition, string? reason,
         CancellationToken ct) =>
-        _registry.SendAsync(Wire(machineId), new StopCommand(task, ttl, disposition, reason), ct);
+        _registry.SendAsync(machineId, new StopCommand(task, ttl, disposition, reason), ct);
 
 
     /// <summary>How the machine acked the last <c>stop</c> for this task (§10) — the honest
@@ -498,11 +498,11 @@ internal sealed class FleetRig(
     /// the first's transcript — a cold start mints a new one.</para>
     /// </summary>
     public IReadOnlyList<string> InstanceSessionIdsOn(
-        string machineId, SessionId task, Func<string, string?>? sessionIdOfLine = null)
+        string alias, SessionId task, Func<string, string?>? sessionIdOfLine = null)
     {
         var extract = sessionIdOfLine ?? SessionIdOfInitLine;
         var dir = System.IO.Path.Combine(
-            _machines[machineId].WorkRoot, TranscriptDefaults.DirName, task.ToString());
+            _machines[alias].WorkRoot, TranscriptDefaults.DirName, task.ToString());
         if (!System.IO.Directory.Exists(dir))
             return [];
 
@@ -526,10 +526,10 @@ internal sealed class FleetRig(
     /// earlier <c>session/update</c> id on the same instance file.
     /// </summary>
     public IReadOnlyList<string> InstanceSessionIdsOn(
-        string machineId, SessionId task, RealHarnessProfile profile)
+        string alias, SessionId task, RealHarnessProfile profile)
     {
         var dir = System.IO.Path.Combine(
-            _machines[machineId].WorkRoot, TranscriptDefaults.DirName, task.ToString());
+            _machines[alias].WorkRoot, TranscriptDefaults.DirName, task.ToString());
         if (!System.IO.Directory.Exists(dir))
             return [];
 
@@ -587,33 +587,33 @@ internal sealed class FleetRig(
     }
 
     /// <summary>
-    /// Dispatch the one currently-submitted task onto <paramref name="machineId"/>: mark
+    /// Dispatch the one currently-submitted task onto <paramref name="target"/>: mark
     /// only that machine ready, then run a single dispatch pass. Deterministic while the
     /// caller keeps at most one task submitted at a time (the suite's invariant).
     /// </summary>
-    public async Task DispatchToAsync(string machineId, CancellationToken ct)
+    public async Task DispatchToAsync(string target, CancellationToken ct)
     {
-        foreach (var (id, _) in _machines)
-            SetReady(id, ready: id == machineId);
+        foreach (var (alias, _) in _machines)
+            SetReady(alias, ready: alias == target);
         await _dispatch.RunDispatchPassAsync(ct);
     }
 
     /// <summary>Which machines the last <see cref="DispatchToAsync"/> left ready, so a
     /// re-beat carries the same readiness and never disturbs dispatch steering.</summary>
-    private readonly ConcurrentDictionary<string, bool> _ready = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<Guid, bool> _ready = new();
 
-    private void SetReady(string machineId, bool ready)
+    private void SetReady(string alias, bool ready)
     {
-        _ready[machineId] = ready;
-        Beat(machineId);
+        _ready[Wire(alias)] = ready;
+        Beat(alias);
     }
 
-    private void Beat(string machineId)
+    private void Beat(string alias)
     {
-        var machine = _machines[machineId];
-        var wire = Wire(machineId);
+        var machine = _machines[alias];
+        var wire = Wire(alias);
         var beat = new MachineHeartbeat(
-            wire, Ready: _ready.GetValueOrDefault(machineId), UnderBackPressure: false,
+            wire.ToString(), Ready: _ready.GetValueOrDefault(wire), UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: machine.Supervisor.RunningTotal, ["default"],
             DateTimeOffset.UtcNow,
             Processes: machine.Daemon.ReportProcesses());
@@ -625,8 +625,8 @@ internal sealed class FleetRig(
 
     /// <summary>What the machine reports it is running (§10) — the rig-side read behind
     /// <c>list_processes</c>, for assertions and diagnostics.</summary>
-    public IReadOnlyList<ProcessStatus> ProcessesOn(string machineId) =>
-        _machines[machineId].Daemon.ReportProcesses();
+    public IReadOnlyList<ProcessStatus> ProcessesOn(string alias) =>
+        _machines[alias].Daemon.ReportProcesses();
 
     /// <summary>
     /// Beats every machine on a fixed cadence, as a real landbridged's heartbeat timer does.
@@ -640,9 +640,9 @@ internal sealed class FleetRig(
         {
             while (!ct.IsCancellationRequested)
             {
-                foreach (var id in _machines.Keys.ToArray())
+                foreach (var alias in _machines.Keys.ToArray())
                 {
-                    try { Beat(id); }
+                    try { Beat(alias); }
                     catch (KeyNotFoundException) { /* machine removed mid-sweep */ }
                 }
                 await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
@@ -762,7 +762,7 @@ internal sealed class FleetRig(
     /// flakes one turn no longer reds the whole opt-in job.
     /// </summary>
     public Task<bool> DispatchUntilReportedAsync(
-        SessionId task, string machineId, int maxAttempts, TimeSpan budget, CancellationToken ct) =>
+        SessionId task, Guid machineId, int maxAttempts, TimeSpan budget, CancellationToken ct) =>
         DispatchUntilAsync(
             task, machineId, async () => await HasReportAsync(task, ct),
             maxAttempts, budget, ct);
@@ -781,7 +781,7 @@ internal sealed class FleetRig(
     /// completion test is a predicate rather than a fixed state.</para>
     /// </summary>
     public async Task<bool> DispatchUntilAsync(
-        SessionId task, string machineId, Func<Task<bool>> done, int maxAttempts, TimeSpan budget,
+        SessionId task, Guid machineId, Func<Task<bool>> done, int maxAttempts, TimeSpan budget,
         CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + budget;
@@ -800,7 +800,7 @@ internal sealed class FleetRig(
             }
             if (await IsClaimableAsync(task, ct) && attempts < maxAttempts)
             {
-                await DispatchToAsync(machineId, ct);
+                await DispatchToAsync(machineId.ToString(), ct);
                 attempts++;
             }
             try { await Task.Delay(TimeSpan.FromMilliseconds(500), ct); }
@@ -872,14 +872,14 @@ internal sealed class FleetRig(
         // A tail of it is what distinguishes "the agent refused", "the agent never started a
         // turn", and "the process was killed mid-turn", none of which the plane's event log can
         // tell apart on its own.
-        foreach (var (id, m) in _machines)
-            AppendTranscriptTail(sb, id, m.WorkRoot, task);
+        foreach (var (alias, m) in _machines)
+            AppendTranscriptTail(sb, Wire(alias), m.WorkRoot, task);
         return sb.ToString();
     }
 
     /// <summary>Tail of a task's captured harness output on one machine (§12), bounded so a
     /// failure message stays readable — a stream-json line can be kilobytes.</summary>
-    private static void AppendTranscriptTail(StringBuilder sb, string machineId, string workRoot, SessionId task)
+    private static void AppendTranscriptTail(StringBuilder sb, Guid machineId, string workRoot, SessionId task)
     {
         var dir = System.IO.Path.Combine(workRoot, TranscriptDefaults.DirName, task.ToString());
         if (!System.IO.Directory.Exists(dir))
@@ -1005,9 +1005,9 @@ internal sealed class FleetRig(
     }
 
     /// <summary>Read a collaborator marker from the machine's work dir for a task, or null.</summary>
-    public async Task<string?> ReadMarkerAsync(string machineId, SessionId task, string markerName, CancellationToken ct)
+    public async Task<string?> ReadMarkerAsync(string alias, SessionId task, string markerName, CancellationToken ct)
     {
-        var path = System.IO.Path.Combine(_machines[machineId].WorkRoot, task.ToString(), markerName);
+        var path = System.IO.Path.Combine(_machines[alias].WorkRoot, task.ToString(), markerName);
         if (!System.IO.File.Exists(path))
             return null;
         try { return await System.IO.File.ReadAllTextAsync(path, ct); }

@@ -27,7 +27,7 @@ namespace Landbridge.Mcp.Tests;
 [Collection(PostgresCollection.Name)]
 public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 {
-    private const string MachineId = "box-1";
+    private static readonly Guid MachineId = TestMachineIds.For("box-1");
 
     private static readonly MachineSnapshot Snapshot =
         new(MachineId, Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
@@ -195,7 +195,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         var html = await res.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
-        Assert.Contains(MachineId, html);
+        Assert.Contains(MachineId.ToString(), html);
         Assert.Contains("machine connected", html);
         Assert.Contains($"/dashboard/sessions/{task.Value}/transcript?machine={MachineId}&amp;ordinal=1", html);
         // A 5s meta-refresh here would re-ask every machine for an inventory over the control
@@ -302,7 +302,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
             await sink.HandleAsync(reply, ct);
         });
         registry.ApplyHeartbeat(MachineId, new MachineHeartbeat(
-            MachineId, Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+            MachineId.ToString(), Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
             RunningSessions: 0, Profiles: ["default"], At: DateTimeOffset.UtcNow, TranscriptsServable: true));
         return sent;
     }

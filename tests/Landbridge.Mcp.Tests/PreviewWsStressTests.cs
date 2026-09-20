@@ -47,8 +47,8 @@ public sealed class PreviewWsStressTests(PostgresFixture pg) : IAsyncLifetime
         var sink = plane.Services.GetRequiredService<RunnerEventSink>();
         await using var producerDaemon = new DaemonHarness("mp", new SinkForwardingChannel(sink));
         await producerDaemon.StartAsync();
-        registry.Register("mp", new HashSet<string> { "default" }, producerDaemon.Send);
-        registry.TrackDispatch("mp", producerTask);
+        registry.Register(TestMachineIds.For("mp"), new HashSet<string> { "default" }, producerDaemon.Send);
+        registry.TrackDispatch(TestMachineIds.For("mp"), producerTask);
 
         string label;
         await using (var db = pg.NewContext())

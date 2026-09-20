@@ -224,7 +224,7 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             new CreateSession(new LeadClaim(team), team, "ask", "default"), ct);
         var instance = WorkerInstanceId.New();
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
-            new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct));
+            new MachineSnapshot(TestMachineIds.For("m1"), true, false, new HashSet<string> { "default" }), instance, ct));
         var asked = Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
             created.Session.Id,
             new RequestInput(new WorkerCaller(team, created.Session.Id, instance),
@@ -240,7 +240,7 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             new CreateSession(new LeadClaim(team), team, "worker", "default"), ct);
         var instance = WorkerInstanceId.New();
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
-            new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct));
+            new MachineSnapshot(TestMachineIds.For("m1"), true, false, new HashSet<string> { "default" }), instance, ct));
         return (await new TokenService(db, TimeProvider.System)
             .MintWorkerTokenAsync(team, created.Session.Id, instance, ct)).Token;
     }

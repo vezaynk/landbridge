@@ -49,7 +49,7 @@ internal static class RealHarnessBar
         var task = await rig.CreateSessionAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
 
         Assert.True(
-            await rig.DispatchUntilReportedAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(task, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
             $"the real {profile.Name} worker never mailed a report.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -85,7 +85,7 @@ internal static class RealHarnessBar
         var task = await rig.CreateSessionAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
 
         Assert.True(
-            await rig.DispatchUntilReportedAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(task, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
             $"no reported session, so no usage to assert on ({profile.Name}).\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -148,7 +148,7 @@ internal static class RealHarnessBar
 
         Assert.True(
             await rig.DispatchUntilAsync(
-                task, "A",
+                task, TestMachineIds.For("A"),
                 async () =>
                 {
                     if (await rig.HasReportAsync(task, ct))
@@ -193,7 +193,7 @@ internal static class RealHarnessBar
         await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
 
         Assert.True(
-            await rig.DispatchUntilReportedAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(task, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
             $"the resumed {profile.Name} worker never mailed a report.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 

@@ -104,7 +104,7 @@ public sealed class ProfileRoutingTests(PostgresFixture pg) : IAsyncLifetime
             beforeDrop.Profiles.SelectMany(p => p.Machines),
             m => Assert.Equal(heartbeatAt, m.LastHeartbeat));
 
-        await registry.DisconnectAsync(m1.ToString());
+        await registry.DisconnectAsync(m1);
 
         var view = await Routing(db, registry);
 

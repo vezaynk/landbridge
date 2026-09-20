@@ -24,7 +24,7 @@ internal static class TestMachines
         RunnerConnectionRegistry registry, Guid machineId,
         Func<RunnerCommand, CancellationToken, Task>? send = null) =>
         registry.Register(
-            machineId.ToString(),
+            machineId,
             new HashSet<string>(StringComparer.Ordinal),
             send ?? ((_, _) => Task.CompletedTask));
 
@@ -35,12 +35,11 @@ internal static class TestMachines
         IReadOnlyList<ProcessStatus>? processes = null,
         CancellationToken ct = default)
     {
-        var id = machineId.ToString();
         var beat = new MachineHeartbeat(
-            id, ready, underBackPressure, default, 0,
+            machineId.ToString(), ready, underBackPressure, default, 0,
             profiles ?? ["default"], clock.GetUtcNow(), Processes: processes);
 
-        await HubOutbox.WriteHeartbeatAsync(db, clock, id, beat, ct);
+        await HubOutbox.WriteHeartbeatAsync(db, clock, machineId, beat, ct);
     }
 
     public static async Task<Guid> ConnectAsync(

@@ -147,8 +147,8 @@ else if (Ready)
         var inventories = new List<TranscriptMachineInventory>();
         foreach (var machine in Locations
                      .Where(l => l is { Connected: true, Machine: not null })
-                     .Select(l => l.Machine!)
-                     .Distinct(StringComparer.Ordinal))
+                     .Select(l => l.Machine!.Value)
+                     .Distinct())
         {
             inventories.Add(await Relay.ListAsync(task, machine, ct) switch
             {
@@ -161,11 +161,11 @@ else if (Ready)
         return null;
     }
 
-    private RenderFragment StreamLink(string machine, int ordinal, string stream, long bytes)
+    private RenderFragment StreamLink(Guid machine, int ordinal, string stream, long bytes)
     {
         if (bytes == 0)
             return @<text>—</text>;
-        var href = $"/dashboard/sessions/{Address(SessionId, SessionSlug)}/transcript?machine={Uri.EscapeDataString(machine)}&ordinal={ordinal}&stream={stream}";
+        var href = $"/dashboard/sessions/{Address(SessionId, SessionSlug)}/transcript?machine={machine:D}&ordinal={ordinal}&stream={stream}";
         return @<a href="@href">@StreamBytes(bytes)</a>;
     }
 }

@@ -157,12 +157,12 @@ internal sealed record ConformanceRunView(
     int Completed,
     int Failed,
     bool WorkerDone,
-    IReadOnlyList<string> MachinesDeclaring,
+    IReadOnlyList<Guid> MachinesDeclaring,
     IReadOnlyList<ConformanceSessionView> Sessions)
 {
     public static ConformanceRunView From(
         Guid runId, string profile, IReadOnlyList<ConformanceSessionView> tasks,
-        IReadOnlyList<string> machines)
+        IReadOnlyList<Guid> machines)
     {
         var pending = 0;
         var reported = 0;

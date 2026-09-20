@@ -70,10 +70,10 @@ public sealed class ForwardDataPlaneEndToEndTests(PostgresFixture pg) : IAsyncLi
 
         // The registry seam a socket would occupy: each machine's send delegate
         // hands the open-forward command straight to its landbridged (§10).
-        registry.Register("mc", new HashSet<string> { "default" }, consumerDaemon.Send);
-        registry.Register("mp", new HashSet<string> { "default" }, producerDaemon.Send);
-        registry.TrackDispatch("mc", consumer.Session);
-        registry.TrackDispatch("mp", producerTask);
+        registry.Register(TestMachineIds.For("mc"), new HashSet<string> { "default" }, consumerDaemon.Send);
+        registry.Register(TestMachineIds.For("mp"), new HashSet<string> { "default" }, producerDaemon.Send);
+        registry.TrackDispatch(TestMachineIds.For("mc"), consumer.Session);
+        registry.TrackDispatch(TestMachineIds.For("mp"), producerTask);
 
         // ── Consumer worker: open_forward over real MCP → a loopback address ────
         string forwardId;

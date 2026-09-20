@@ -259,7 +259,7 @@ public sealed class RelayGrantService(
     /// Receiving list reads these two columns.
     /// </summary>
     public Task RecordConsumerBindAsync(
-        Guid forwardId, string machineId, int port, CancellationToken ct = default) =>
+        Guid forwardId, Guid machineId, int port, CancellationToken ct = default) =>
         db.RelayGrants.Where(g => g.ForwardId == forwardId && !g.Revoked)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(g => g.ConsumerMachine, machineId)

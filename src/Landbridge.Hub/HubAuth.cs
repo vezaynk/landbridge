@@ -121,12 +121,6 @@ public sealed class HubCaller
     /// <summary>
     /// The machines this worker holds a live instance on.
     ///
-    /// <para><see cref="WorkerInstanceRow.MachineId"/> is a string (§12) carrying
-    /// whatever form the dispatcher had, so this parses rather than matching a
-    /// rendering: "D" and "N" are the two written today, and a third would
-    /// otherwise deny silently. A value that will not parse is not a machine this
-    /// worker can be said to hold, so it is dropped.</para>
-    ///
     /// <para>Resolved once and kept, so the authorization gate and the queue scope
     /// below agree — and, on an SSE stream, so the scope does not requery per
     /// catch-up. That makes it a connect-time snapshot for a stream, the same as
@@ -140,13 +134,10 @@ public sealed class HubCaller
             return _heldMachines = [];
         var held = await db.Set<WorkerInstanceRow>().AsNoTracking()
             .Where(i => i.SessionId == sid && !i.Revoked && i.MachineId != null)
-            .Select(i => i.MachineId!)
+            .Select(i => i.MachineId!.Value)
+            .Distinct()
             .ToListAsync(ct);
-        var ids = new HashSet<Guid>();
-        foreach (var text in held)
-            if (Guid.TryParse(text, out var id))
-                ids.Add(id);
-        return _heldMachines = ids;
+        return _heldMachines = [.. held];
     }
 
     private HashSet<Guid>? _heldMachines;

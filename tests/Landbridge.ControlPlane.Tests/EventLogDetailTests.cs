@@ -41,10 +41,10 @@ public sealed class EventLogDetailTests
         var instance = WorkerInstanceId.New();
         var text = EventLogDetail.Describe(
             new Dispatch(
-                new MachineSnapshot("box-1", true, false, new HashSet<string> { "default" }),
+                new MachineSnapshot(TestMachineIds.For("box-1"), true, false, new HashSet<string> { "default" }),
                 instance),
             rec, rec with { CurrentInstance = instance, Attempt = 1 },
-            [new MintWorkerInstanceToken(instance, "box-1")]);
+            [new MintWorkerInstanceToken(instance, TestMachineIds.For("box-1"))]);
         Assert.Equal("MintWorkerInstanceToken", text);
     }
 

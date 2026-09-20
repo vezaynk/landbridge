@@ -23,7 +23,7 @@ public sealed record SessionListItem(
     Guid? MessageId,
     InputRequestKind? InputKind,
     DateTimeOffset? BlockedAt,
-    string? ParkMachine,
+    Guid? ParkMachine,
     Guid? CurrentInstanceId,
     DateTimeOffset? MessageOpenedAt,
     DateTimeOffset? LastMessageClosedAt);
@@ -68,8 +68,8 @@ public sealed record SessionDocument(
     VerdictProvenance? CompletionProvenance,
     Guid? ContinuesSessionId,
     Guid? CurrentInstanceId,
-    string? PreferredMachine,
-    string? ParkMachine,
+    Guid? PreferredMachine,
+    Guid? ParkMachine,
     DateTimeOffset? BlockedAt,
     IReadOnlyList<InstanceDocument> Instances,
     IReadOnlyList<UsageDocument> Usage);
@@ -128,7 +128,7 @@ public sealed record ForwardDocument(
     DateTimeOffset? UsedByConsumerAt,
     DateTimeOffset? UsedByProducerAt,
     bool Revoked,
-    string? ConsumerMachine,
+    Guid? ConsumerMachine,
     int? ConsumerPort);
 
 public sealed record PreviewDocument(
@@ -198,7 +198,7 @@ public sealed record InstanceDocument(
     Guid SessionId,
     bool Revoked,
     DateTimeOffset CreatedAt,
-    string? MachineId);
+    Guid? MachineId);
 
 public sealed record UsageDocument(
     Guid SessionId,

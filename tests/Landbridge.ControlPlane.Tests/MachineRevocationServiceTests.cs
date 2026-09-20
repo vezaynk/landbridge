@@ -179,13 +179,13 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
         Assert.Equal(0, again.WorkersRevoked);
 
         // Unknown machines too — a stale id from a page left open is not an error.
-        Assert.False((await RevokeAsync(clock, registry, Guid.NewGuid().ToString())).ChannelClosed);
+        Assert.False((await RevokeAsync(clock, registry, Guid.NewGuid())).ChannelClosed);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
     private async Task<MachineRevocation> RevokeAsync(
-        TimeProvider clock, RunnerConnectionRegistry registry, string machineId)
+        TimeProvider clock, RunnerConnectionRegistry registry, Guid machineId)
     {
         var scopes = ScopeFactory(clock);
         var sink = new RunnerEventSink(
@@ -195,17 +195,16 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
         var service = new MachineRevocationService(
             db, new TokenService(db, clock), registry, sink, clock,
             NullLogger<MachineRevocationService>.Instance);
-        return await service.RevokeAsync(Guid.Parse(machineId));
+        return await service.RevokeAsync(machineId);
     }
 
-    private async Task<(string MachineId, MachineCredentials Credentials)> EnrollAsync(TimeProvider clock)
+    private async Task<(Guid MachineId, MachineCredentials Credentials)> EnrollAsync(TimeProvider clock)
     {
         await using var db = pg.NewContext();
         var tokens = new TokenService(db, clock);
         var creds = await tokens.ExchangeEnrollmentAsync(
             (await tokens.IssueEnrollmentTokenAsync()).Token, Decl);
-        // The registry keys machines by the authenticated id's string form (§13).
-        return (creds!.MachineId.ToString(), creds);
+        return (creds!.MachineId, creds);
     }
 
     /// <summary>
@@ -214,7 +213,7 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
     /// would have shipped down the socket.
     /// </summary>
     private async Task<(SessionId Session, string WorkerToken)> DispatchOntoAsync(
-        TimeProvider clock, TeamId team, string machineId, RunnerConnectionRegistry registry)
+        TimeProvider clock, TeamId team, Guid machineId, RunnerConnectionRegistry registry)
     {
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
@@ -244,8 +243,8 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
 
     private static IReadOnlySet<string> Profiles() => new HashSet<string>(StringComparer.Ordinal) { "default" };
 
-    private static MachineHeartbeat Ready(string machineId) =>
-        new(machineId, Ready: true, UnderBackPressure: false,
+    private static MachineHeartbeat Ready(Guid machineId) =>
+        new(machineId.ToString(), Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow);
 
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)

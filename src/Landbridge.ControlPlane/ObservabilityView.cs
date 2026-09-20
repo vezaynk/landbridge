@@ -248,7 +248,7 @@ public sealed partial class DashboardQueries
         var receipts = await db.RelayGrants.AsNoTracking()
             .Where(g => !g.Revoked && g.ConsumerPort != null && g.ConsumerMachine != null)
             .Select(g => new ObservabilityReceipt(
-                g.ForwardId, g.ConsumerMachine!, g.ServiceName, g.ConsumerPort!.Value,
+                g.ForwardId, g.ConsumerMachine!.Value.ToString(), g.ServiceName, g.ConsumerPort!.Value,
                 g.ProducerSessionId, g.CreatedAt))
             .ToListAsync(ct);
         var receiptsByMachine = receipts
@@ -263,9 +263,9 @@ public sealed partial class DashboardQueries
                 .ToDictionaryAsync(t => t.TeamId, t => t.Slug, ct);
 
         var machineIdTexts = liveBySession.Values
-            .Concat(rows.Select(r => r.ParkMachine))
-            .Concat(rows.Select(r => r.PreferredMachine))
-            .Concat(lastMachine.Values)
+            .Concat(rows.Select(r => r.ParkMachine?.ToString()))
+            .Concat(rows.Select(r => r.PreferredMachine?.ToString()))
+            .Concat(lastMachine.Values.Select(m => m?.ToString()))
             .Concat(machineViews.Select(m => m.MachineId))
             .Where(id => !string.IsNullOrEmpty(id))
             .Distinct(StringComparer.Ordinal)
@@ -295,9 +295,9 @@ public sealed partial class DashboardQueries
         {
             var live = liveBySession.TryGetValue(s.Id, out var liveMachine);
             var machine = liveMachine
-                ?? s.ParkMachine
-                ?? s.PreferredMachine
-                ?? lastMachine.GetValueOrDefault(s.Id)
+                ?? s.ParkMachine?.ToString()
+                ?? s.PreferredMachine?.ToString()
+                ?? lastMachine.GetValueOrDefault(s.Id)?.ToString()
                 ?? "—";
             DateTimeOffset? beat = live && liveMachine is not null
                 ? heartbeatByMachine.GetValueOrDefault(liveMachine)

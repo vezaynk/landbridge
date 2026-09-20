@@ -18,7 +18,7 @@ namespace Landbridge.ControlPlane.Tests;
 [Collection(PostgresCollection.Name)]
 public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 {
-    private static readonly string M1 = Guid.NewGuid().ToString();
+    private static readonly Guid M1 = Guid.NewGuid();
 
     public async Task InitializeAsync()
     {
@@ -61,7 +61,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         // The task moved submitted → working, and it is tracked on the machine.
         Assert.Equal(SessionState.Working, await StateAsync(clock, sessionId));
-        Assert.Contains(sessionId, registry.SessionsOn(m1.ToString()));
+        Assert.Contains(sessionId, registry.SessionsOn(m1));
 
         // The minted worker token validates to a Worker principal for this task.
         await using var db = pg.NewContext();
@@ -291,7 +291,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch(M1, second, inherited: true);
 
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
-        await sink.HandleAsync(new RebootedEvent(M1, clock.GetUtcNow()), M1, default);
+        await sink.HandleAsync(new RebootedEvent(M1.ToString(), clock.GetUtcNow()), M1, default);
 
         Assert.Equal(SessionState.Failed, await StateAsync(clock, first));
         Assert.Equal(SessionState.Failed, await StateAsync(clock, second));
@@ -324,7 +324,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch(M1, redispatched);
 
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
-        await sink.HandleAsync(new RebootedEvent(M1, clock.GetUtcNow()), M1, default);
+        await sink.HandleAsync(new RebootedEvent(M1.ToString(), clock.GetUtcNow()), M1, default);
 
         Assert.Equal(SessionState.Failed, await StateAsync(clock, inherited));
         Assert.Equal(SessionState.Working, await StateAsync(clock, redispatched));
@@ -350,7 +350,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch(M1, task);
 
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
-        await sink.HandleAsync(new RebootedEvent(M1, clock.GetUtcNow()), M1, default);
+        await sink.HandleAsync(new RebootedEvent(M1.ToString(), clock.GetUtcNow()), M1, default);
 
         Assert.Equal(SessionState.Working, await StateAsync(clock, task));
     }
@@ -395,7 +395,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var scopes = ScopeFactory(clock);
         var team = TeamId.New();
         var (id, _, machine) = await SeedBlockedLiveAsync(clock, team);
-        var wire = machine.ToString();
+        var wire = machine;
         var registry = await LiveGuidAsync(clock, machine, id);
 
         // Worker exits while blocked — expected, not a disconnect.
@@ -434,7 +434,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var scopes = ScopeFactory(clock);
         var team = TeamId.New();
         var (id, instance, machine) = await SeedBlockedLiveAsync(clock, team);
-        var wire = machine.ToString();
+        var wire = machine;
         var registry = await LiveGuidAsync(clock, machine, id);
 
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
@@ -777,7 +777,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         return created.Session.Id;
     }
 
-    private async Task<SessionId> SeedWorkingTaskAsync(TimeProvider clock, TeamId team, string machineId)
+    private async Task<SessionId> SeedWorkingTaskAsync(TimeProvider clock, TeamId team, Guid machineId)
     {
         var (id, _) = await SeedWorkingTaskWithInstanceAsync(clock, team, machineId);
         return id;
@@ -786,7 +786,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     /// <summary>Create → dispatch, returning both the task and the dispatched
     /// worker instance so a caller can act as that worker (e.g. report a result).</summary>
     private async Task<(SessionId Id, WorkerInstanceId Instance)> SeedWorkingTaskWithInstanceAsync(
-        TimeProvider clock, TeamId team, string machineId)
+        TimeProvider clock, TeamId team, Guid machineId)
     {
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
@@ -801,7 +801,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     /// <summary>Create → dispatch → block, so the task sits in blocked_on_input with
     /// BlockedAt stamped at the current clock reading — the §11 wait shape.</summary>
     private async Task<(SessionId Id, WorkerInstanceId Instance)> SeedBlockedTaskAsync(
-        TimeProvider clock, TeamId team, string machineId)
+        TimeProvider clock, TeamId team, Guid machineId)
     {
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
@@ -817,7 +817,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
     /// <summary>A registry with one ready machine heartbeating now and tracking the
     /// task — what DispatchService would have set up at dispatch.</summary>
-    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, string machineId, SessionId task)
+    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, Guid machineId, SessionId task)
     {
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(machineId, Set("default"), (_, _) => Task.CompletedTask);
@@ -837,7 +837,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var id = created.Session.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
-            new MachineSnapshot(machineId.ToString(), Ready: true, UnderBackPressure: false, Set("default")), instance);
+            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
         await store.ApplyAsync(id, new RequestInput(new WorkerCaller(team, id, instance), InputRequestKind.Question));
         return (id, instance, machineId);
     }
@@ -849,7 +849,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var registry = new RunnerConnectionRegistry(clock);
         TestMachines.Register(registry, machineId);
         await TestMachines.HeartbeatAsync(db, clock, machineId);
-        registry.TrackDispatch(machineId.ToString(), task);
+        registry.TrackDispatch(machineId, task);
         return registry;
     }
 
@@ -868,7 +868,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     private static IReadOnlySet<string> Set(params string[] names) =>
         new HashSet<string>(names, StringComparer.Ordinal);
 
-    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
-        new(machineId, Ready: true, UnderBackPressure: false,
+    private static MachineHeartbeat Heartbeat(Guid machineId, params string[] profiles) =>
+        new(machineId.ToString(), Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 }

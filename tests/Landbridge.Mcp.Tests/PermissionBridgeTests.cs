@@ -63,7 +63,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
             registry ?? new RunnerConnectionRegistry(TimeProvider.System), AccessorFor(principal));
 
     private static MachineSnapshot Machine() =>
-        new("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
     /// <summary>A dispatched, working task and the credential of its incumbent worker.</summary>
     private async Task<WorkerCaller> SeedWorkingTask()
@@ -415,7 +415,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Guid box;
         await using (var db = pg.NewContext())
             box = await TestMachines.ConnectAsync(db, TimeProvider.System, registry, "box");
-        registry.TrackDispatch(box.ToString(), caller.Session);
+        registry.TrackDispatch(box, caller.Session);
         var sweeper = new WaitTtlSweeper(
             ScopeFactory(), registry, TimeProvider.System, NullLogger<WaitTtlSweeper>.Instance,
             waitTtl: TimeSpan.FromMilliseconds(1), machineLivenessWindow: TimeSpan.FromHours(1),

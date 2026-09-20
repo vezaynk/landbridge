@@ -29,7 +29,7 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
             default, 0, ["default", "gpu"], clock.GetUtcNow(),
             Processes: [new ProcessStatus("web", ProcessState.Running, session, clock.GetUtcNow(), StdinOpen: true)]);
 
-        await HubOutbox.WriteHeartbeatAsync(db, clock, machineId.ToString(), beat, CancellationToken.None);
+        await HubOutbox.WriteHeartbeatAsync(db, clock, machineId, beat, CancellationToken.None);
 
         var row = await db.Machines.AsNoTracking().SingleAsync(m => m.Id == machineId);
         Assert.Equal(clock.GetUtcNow(), row.LastSpokeAt);
@@ -60,18 +60,18 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var clock = new FakeTimeProvider();
         var machineId = await EnrollAsync(db, clock, "dispatch-box");
-        var id = machineId.ToString();
+        var id = machineId;
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(id, new HashSet<string>(StringComparer.Ordinal), (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat(id, new MachineHeartbeat(
-            id, Ready: true, UnderBackPressure: false, default, 0, ["default"], clock.GetUtcNow()));
+            id.ToString(), Ready: true, UnderBackPressure: false, default, 0, ["default"], clock.GetUtcNow()));
 
         Assert.Empty(await MachineLive.ReadyAsync(
             db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None));
 
         await HubOutbox.WriteHeartbeatAsync(
             db, clock, id,
-            new MachineHeartbeat(id, true, false, default, 0, ["default"], clock.GetUtcNow()),
+            new MachineHeartbeat(id.ToString(), true, false, default, 0, ["default"], clock.GetUtcNow()),
             CancellationToken.None);
 
         var ready = await MachineLive.ReadyAsync(
@@ -89,7 +89,7 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
 
         await HubOutbox.WriteHeartbeatAsync(
-            db, new FakeTimeProvider(), "m1",
+            db, new FakeTimeProvider(), TestMachineIds.For("m1"),
             new MachineHeartbeat("m1", true, false, default, 0, ["default"], DateTimeOffset.UtcNow),
             CancellationToken.None);
 
