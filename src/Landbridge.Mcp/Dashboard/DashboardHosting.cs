@@ -1,5 +1,6 @@
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Dashboard.Components;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.Extensions.Configuration;
@@ -25,12 +26,7 @@ public static class DashboardHosting
         services.AddScoped<FleetBoardMutations>();
         services.AddLandbridgeForwarding();
         services.AddHttpContextAccessor();
-        services.AddHttpClient<HubClient>((sp, client) =>
-        {
-            var url = sp.GetRequiredService<IConfiguration>()["Landbridge:HubUrl"];
-            if (!string.IsNullOrWhiteSpace(url))
-                client.BaseAddress = new Uri(url.TrimEnd('/') + "/");
-        });
+        services.AddLandbridgeHubClient();
         services.TryAddSingleton<OperatorAttemptLimiter>();
         services.AddRazorComponents()
             .AddInteractiveServerComponents();
