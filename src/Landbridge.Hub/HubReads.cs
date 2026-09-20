@@ -29,8 +29,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         var slugs = await TeamSlugsAsync(rows.Select(s => s.TeamId), ct);
         return rows.Select(s => new SessionListItem(
             s.Id, s.Slug, s.TeamId, slugs.GetValueOrDefault(s.TeamId), s.Profile,
-            s.OccupancyDesired, s.OccupancyObserved, s.Health, s.Hidden,
-            s.MessageState, s.PendingSpawn)).ToList();
+            s.State, s.OccupancyDesired, s.OccupancyObserved, s.Health, s.Hidden,
+            s.MessageState, s.PendingSpawn, s.ReportUnread, s.MessageId, s.InputKind,
+            s.BlockedAt, s.ParkMachine, s.CurrentInstanceId, s.MessageOpenedAt,
+            s.LastMessageClosedAt)).ToList();
     }
 
     public async Task<SessionDocument?> SessionAsync(Guid id, CancellationToken ct)
@@ -58,10 +60,13 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
             s.Id, s.Slug, s.TeamId, string.IsNullOrEmpty(teamSlug) ? null : teamSlug,
             s.Namespace, s.Profile, s.State, s.OccupancyDesired, s.OccupancyObserved,
             s.Health, s.Hidden, s.MessageState, s.MessageVerdict, s.ReportUnread,
-            s.MessageId, s.PendingSpawn, s.Description, s.ResultReference, s.WorkerReport,
+            s.MessageId, s.LastMessageId, s.LastMessageTerminal, s.MessageOpenedAt,
+            s.LastMessageClosedAt, s.PendingSpawn, s.Description, s.ResultReference, s.WorkerReport,
             s.InputKind, s.InputQuestion, s.InputAnswer, s.PermissionTool, s.PermissionOptions,
-            s.PermissionOptionId, s.PermissionVerdict, s.Attempt, s.InfrastructureRequeues,
-            s.LastRequeueReason, s.CurrentInstanceId, s.PreferredMachine, s.ParkMachine,
+            s.PermissionOptionId, s.PermissionVerdict, s.PermissionEscalatedAt,
+            s.PermissionEscalationReason, s.Attempt, s.InfrastructureRequeues,
+            s.InfrastructureRequeueLimit, s.LastRequeueReason, s.CompletionProvenance,
+            s.ContinuesSessionId, s.CurrentInstanceId, s.PreferredMachine, s.ParkMachine,
             s.BlockedAt, instances, usage);
     }
 
@@ -181,7 +186,7 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
     public async Task<IReadOnlyList<ProcessDocument>> ProcessesAsync(
         HubCaller caller, Guid? machineId, CancellationToken ct)
     {
-        if (!caller.MayProcesses)
+        if (!caller.MayProcesses && caller.Principal is not Principal.Worker)
             return [];
         var q = db.MachineProcesses.AsNoTracking().AsQueryable();
         if (machineId is { } machine)
@@ -279,7 +284,7 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         return rows.Select(m =>
         {
             bound.TryGetValue(m.Id, out var b);
-            var live = m.Ready && m.LastSpokeAt is { } at && at >= cutoff;
+            var live = m.LastSpokeAt is { } at && at >= cutoff;
             return new MachineDocument(
                 m.Id, m.Slug, m.Name, m.Os, m.EnrolledAt, m.Revoked, m.LastSpokeAt,
                 m.Ready, m.UnderBackPressure, live, m.Profiles,
