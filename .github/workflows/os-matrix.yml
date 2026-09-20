@@ -15,8 +15,13 @@ name: OS Matrix
 on:
   push:
     branches: [master]
+  # Every PR, not just the ones targeting master. Three of the five checks the
+  # master ruleset requires are this workflow's `test (os)` legs, so a stacked PR
+  # — which bases onto its parent branch — could satisfy ci.yml's half and still
+  # be unmergeable, with no failing check to say why. #268 widened ci.yml and
+  # missed this file, which is exactly how that gap looked from the outside.
   pull_request:
-    branches: [master]
+    branches: ['**']
 
 concurrency:
   group: os-matrix-${{ github.ref }}
