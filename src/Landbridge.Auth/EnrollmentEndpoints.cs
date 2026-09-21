@@ -1,10 +1,10 @@
 using Landbridge.ControlPlane.Auth;
 
-namespace Landbridge.Mcp;
+namespace Landbridge.Auth;
 
 /// <summary>
 /// The machine bootstrap surface (spec §5 Bootstrap, §11, §13). Plain HTTP, in
-/// the narrow non-MCP style of <see cref="RelayValidationEndpoints"/>: landbridged
+/// the narrow non-MCP style of the OAuth endpoints beside it: landbridged
 /// exchanges a human-issued
 /// enrollment token for machine credentials at <c>/enroll</c>, then keeps its
 /// short-lived access token fresh at <c>/machine/refresh</c>.
@@ -48,13 +48,13 @@ public static class EnrollmentEndpoints
     /// one exchange in the system (§9 check 13): a live, unused enrollment token
     /// becomes a machine identity plus its access/refresh pair.
     /// <list type="bullet">
-    /// <item>200 {machineId, accessToken, accessExpiresAt, refreshToken, refreshExpiresAt}.</item>
+    /// <item>200 {machineId, controlUrl, accessToken, accessExpiresAt, refreshToken, refreshExpiresAt}.</item>
     /// <item>400 — a required field is missing (the caller's bug, not a token verdict).</item>
     /// <item>401 — dead/used/expired/wrong-class/unknown token; one generic refusal, no oracle.</item>
     /// </list>
     /// </summary>
     private static async Task<IResult> HandleEnrollAsync(
-        EnrollRequest? body, TokenService tokens, CancellationToken ct)
+        EnrollRequest? body, TokenService tokens, OAuthServerConfig server, CancellationToken ct)
     {
         if (body is null
             || string.IsNullOrWhiteSpace(body.EnrollmentToken)
@@ -74,6 +74,10 @@ public static class EnrollmentEndpoints
             machineId = string.IsNullOrEmpty(credentials.Slug)
                 ? credentials.MachineId.ToString("D")
                 : credentials.Slug,
+            // Where this machine dials /runner. Enrollment happens at the authorization
+            // server, which is not the plane, so the operator supplies one URL and the
+            // exchange answers with the other rather than asking them for both.
+            controlUrl = server.ResourceId,
             accessToken = credentials.Access.Token,
             accessExpiresAt = credentials.Access.ExpiresAt,
             refreshToken = credentials.Refresh.Token,

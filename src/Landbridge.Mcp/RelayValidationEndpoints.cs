@@ -7,7 +7,7 @@ namespace Landbridge.Mcp;
 
 /// <summary>
 /// The relay-facing grant-validation endpoint (spec §8.3). Plain HTTP, in the
-/// narrow non-MCP style of <see cref="EnrollmentEndpoints"/>: the relay asks the
+/// narrow non-MCP style of the enrollment endpoints: the relay asks the
 /// control plane whether a grant a tunnel presented is valid for a
 /// <c>{forwardId, role}</c>, and the plane answers from
 /// <see cref="RelayGrantService"/>.

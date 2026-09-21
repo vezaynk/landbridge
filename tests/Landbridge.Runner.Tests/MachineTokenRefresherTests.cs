@@ -14,7 +14,8 @@ public class MachineTokenRefresherTests
     private static readonly DateTimeOffset Start = DateTimeOffset.Parse("2026-07-29T00:00:00+00:00");
 
     private static MachineCredentialFile Initial() =>
-        new("m-1", "https://plane.example.com", "access-0", Start + TimeSpan.FromHours(1), "refresh-0", Start + TimeSpan.FromDays(90));
+        new("m-1", "https://plane.example.com", "https://auth.example.com",
+            "access-0", Start + TimeSpan.FromHours(1), "refresh-0", Start + TimeSpan.FromDays(90));
 
     /// <summary>A refresh delegate that hands out access-1, access-2, … each with a fresh 1h TTL.</summary>
     private static Func<string, CancellationToken, Task<RefreshResponse?>> SequentialRefresh(

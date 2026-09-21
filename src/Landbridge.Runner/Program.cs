@@ -139,7 +139,7 @@ public static class Program
             refreshHttp = new HttpClient();
             refresher = new MachineTokenRefresher(
                 creds,
-                (refreshToken, refreshCt) => CredentialStore.RefreshAsync(refreshHttp, creds.ControlUrl, refreshToken, refreshCt),
+                (refreshToken, refreshCt) => CredentialStore.RefreshAsync(refreshHttp, creds.AuthUrl, refreshToken, refreshCt),
                 updated => CredentialStore.Save(stateDir, updated),
                 clock,
                 Console.WriteLine);
@@ -209,11 +209,14 @@ public static class Program
     /// </summary>
     private static async Task<int> RunEnrollAsync(string[] args)
     {
-        var controlUrl = ArgValue(args, "--control-url");
-        if (string.IsNullOrWhiteSpace(controlUrl))
+        // Enrollment happens at the authorization server, not the plane: it is a
+        // credential exchange, and that is where credentials are minted. The plane's own
+        // URL comes back in the response, so a box is still pointed at one thing.
+        var authUrl = ArgValue(args, "--auth-url");
+        if (string.IsNullOrWhiteSpace(authUrl))
         {
             Console.Error.WriteLine(
-                "usage: landbridged --enroll --control-url <https://plane> " +
+                "usage: landbridged --enroll --auth-url <https://auth> " +
                 "[--enroll-token-file <path>] [--state-dir <dir>] [--name <n>]\n" +
                 "  The enrollment token is read from --enroll-token-file, or from stdin if omitted " +
                 "(`landbridged --enroll < token` or an interactive prompt) — never from argv (§13).");
@@ -243,7 +246,7 @@ public static class Program
         using var http = new HttpClient();
         try
         {
-            var creds = await CredentialStore.EnrollAsync(http, controlUrl, request, CancellationToken.None);
+            var creds = await CredentialStore.EnrollAsync(http, authUrl, request, CancellationToken.None);
             CredentialStore.Save(stateDir, creds);
             Console.WriteLine(creds.MachineId);
             Console.Error.WriteLine(
@@ -257,7 +260,7 @@ public static class Program
         }
         catch (HttpRequestException e)
         {
-            Console.Error.WriteLine($"enrollment failed: could not reach {controlUrl}: {e.Message}");
+            Console.Error.WriteLine($"enrollment failed: could not reach {authUrl}: {e.Message}");
             return 1;
         }
     }

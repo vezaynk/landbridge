@@ -12,7 +12,8 @@ public class CredentialStoreTests
     private static readonly DateTimeOffset RefreshExp = DateTimeOffset.Parse("2026-10-27T12:00:00+00:00");
 
     private static MachineCredentialFile Sample(string access = "lbr_m_aaa", string refresh = "lbr_r_bbb") =>
-        new("11111111-1111-1111-1111-111111111111", "https://plane.example.com", access, AccessExp, refresh, RefreshExp);
+        new("11111111-1111-1111-1111-111111111111", "https://plane.example.com",
+            "https://auth.example.com", access, AccessExp, refresh, RefreshExp);
 
     private static string FreshDir() =>
         Path.Combine(Path.GetTempPath(), "landbridge-cred-tests", Guid.NewGuid().ToString("N"));

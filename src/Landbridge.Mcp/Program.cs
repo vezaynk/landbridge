@@ -208,12 +208,6 @@ app.MapRelayValidationEndpoint();
 // is not a §5 credential class.
 app.MapPreviewConnectEndpoint();
 
-// The machine bootstrap surface (§5 Bootstrap, §13): /enroll exchanges a
-// human-issued enrollment token for machine credentials; /machine/refresh
-// re-mints landbridged's short-lived access token. Both anonymous — the presented
-// token is the credential, validated by TokenService, not a Principal.
-app.MapEnrollmentEndpoints();
-
 // The resource server's discovery document (RFC 9728, anonymous). It names the
 // authorization server, which is what the RFC 9728 challenge on the MCP 401 sends
 // a client to read. The authorize/token endpoints and the RFC 8414 document are
