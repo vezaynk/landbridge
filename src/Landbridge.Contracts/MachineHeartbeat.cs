@@ -24,7 +24,6 @@ namespace Landbridge.Contracts;
 /// inventory, which is a different and honest answer.</para>
 /// </param>
 public sealed record MachineHeartbeat(
-    string MachineId,
     bool Ready,
     bool UnderBackPressure,
     SystemLoad Load,

@@ -134,7 +134,7 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
             await HubOutbox.WriteHeartbeatAsync(
                 db, clock, machineId,
                 new MachineHeartbeat(
-                    machineId.ToString(), Ready: true, UnderBackPressure: false,
+                    Ready: true, UnderBackPressure: false,
                     default, 0, ["any-linux"], clock.GetUtcNow(),
                     Processes:
                     [
@@ -366,7 +366,7 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
         await HubOutbox.WriteHeartbeatAsync(
             db, clock, machineId,
             new MachineHeartbeat(
-                machineId.ToString(), Ready: true, UnderBackPressure: false,
+                Ready: true, UnderBackPressure: false,
                 default, 0, ["any-linux"], clock.GetUtcNow(),
                 Processes:
                 [

@@ -387,7 +387,7 @@ public class RunnerWireTests
     [Fact]
     public void Rebooted_event_round_trips_as_the_machine_scoped_message()
     {
-        var original = new RebootedEvent("machine-7", DateTimeOffset.UtcNow);
+        var original = new RebootedEvent(DateTimeOffset.UtcNow);
         var decoded = Assert.IsType<RebootedEvent>(RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
         Assert.Equal(original, decoded);
     }
@@ -447,7 +447,6 @@ public class RunnerWireTests
     public void Heartbeat_round_trips_including_load_and_profiles()
     {
         var original = new MachineHeartbeat(
-            "machine-1",
             Ready: true,
             UnderBackPressure: false,
             new SystemLoad(0.1, 0.2, 0.3),
@@ -458,8 +457,7 @@ public class RunnerWireTests
         var decoded = RunnerWire.DecodeHeartbeat(RunnerWire.EncodeHeartbeat(original));
 
         Assert.NotNull(decoded);
-        Assert.Equal("machine-1", decoded!.MachineId);
-        Assert.True(decoded.Ready);
+        Assert.True(decoded!.Ready);
         Assert.Equal(new SystemLoad(0.1, 0.2, 0.3), decoded.Load);
         Assert.Equal(4, decoded.RunningSessions);
         Assert.Equal(new[] { "default", "restricted" }, decoded.Profiles);
@@ -470,7 +468,7 @@ public class RunnerWireTests
     public void Heartbeat_carries_the_transcripts_servable_flag_and_defaults_it_false()
     {
         var servable = new MachineHeartbeat(
-            "machine-1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+            Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
             RunningSessions: 0, Profiles: ["default"], At: DateTimeOffset.UtcNow,
             TranscriptsServable: true);
 

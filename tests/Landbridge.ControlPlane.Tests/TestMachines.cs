@@ -36,7 +36,7 @@ internal static class TestMachines
         CancellationToken ct = default)
     {
         var beat = new MachineHeartbeat(
-            machineId.ToString(), ready, underBackPressure, default, 0,
+            ready, underBackPressure, default, 0,
             profiles ?? ["default"], clock.GetUtcNow(), Processes: processes);
 
         await HubOutbox.WriteHeartbeatAsync(db, clock, machineId, beat, ct);

@@ -92,7 +92,7 @@ public class WebSocketControlPlaneChannelTests
         // Publish an event and a heartbeat up the dialed socket.
         Assert.True(await channel.PublishAsync(new StartedEvent(eventTask, clock.GetUtcNow()), gapBefore: 0, ct));
         Assert.True(await channel.HeartbeatAsync(
-            new MachineHeartbeat("machine-ws", Ready: true, UnderBackPressure: false,
+            new MachineHeartbeat(Ready: true, UnderBackPressure: false,
                 new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], clock.GetUtcNow()), ct));
 
         // The server decoded both frames.

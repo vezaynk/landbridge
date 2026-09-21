@@ -402,8 +402,8 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StopAsync(ct);
     }
 
-    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
-        new(machineId, Ready: true, UnderBackPressure: false,
+    private static MachineHeartbeat Heartbeat(params string[] profiles) =>
+        new(Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 
     private async Task<string> SlugAsync(Guid machineId)

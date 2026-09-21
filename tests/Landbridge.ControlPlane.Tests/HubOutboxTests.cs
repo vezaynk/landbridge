@@ -25,7 +25,7 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
         var machineId = await EnrollAsync(db, clock, "box");
         var session = Guid.NewGuid();
         var beat = new MachineHeartbeat(
-            machineId.ToString(), Ready: true, UnderBackPressure: false,
+            Ready: true, UnderBackPressure: false,
             default, 0, ["default", "gpu"], clock.GetUtcNow(),
             Processes: [new ProcessStatus("web", ProcessState.Running, session, clock.GetUtcNow(), StdinOpen: true)]);
 
@@ -64,14 +64,14 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(id, new HashSet<string>(StringComparer.Ordinal), (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat(id, new MachineHeartbeat(
-            id.ToString(), Ready: true, UnderBackPressure: false, default, 0, ["default"], clock.GetUtcNow()));
+            Ready: true, UnderBackPressure: false, default, 0, ["default"], clock.GetUtcNow()));
 
         Assert.Empty(await MachineLive.ReadyAsync(
             db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None));
 
         await HubOutbox.WriteHeartbeatAsync(
             db, clock, id,
-            new MachineHeartbeat(id.ToString(), true, false, default, 0, ["default"], clock.GetUtcNow()),
+            new MachineHeartbeat(true, false, default, 0, ["default"], clock.GetUtcNow()),
             CancellationToken.None);
 
         var ready = await MachineLive.ReadyAsync(
@@ -90,7 +90,7 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
 
         await HubOutbox.WriteHeartbeatAsync(
             db, new FakeTimeProvider(), TestMachineIds.For("m1"),
-            new MachineHeartbeat("m1", true, false, default, 0, ["default"], DateTimeOffset.UtcNow),
+            new MachineHeartbeat(true, false, default, 0, ["default"], DateTimeOffset.UtcNow),
             CancellationToken.None);
 
         Assert.Empty(await db.HubQueue.AsNoTracking().ToListAsync());

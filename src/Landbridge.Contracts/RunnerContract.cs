@@ -584,7 +584,7 @@ public sealed record ForwardClosedEvent(
 /// persistence the runner has no task ids to name, which is the whole point —
 /// every task it held requeues against the infrastructure counter (§6).
 /// </summary>
-public sealed record RebootedEvent(string MachineId, DateTimeOffset At) : RunnerEvent;
+public sealed record RebootedEvent(DateTimeOffset At) : RunnerEvent;
 
 /// <summary>
 /// <c>transcript-chunk</c> — the one reply to one <see cref="ReadTranscriptCommand"/>
