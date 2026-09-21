@@ -40,11 +40,19 @@ public sealed class SessionEventFanout : IHostedService, IAsyncDisposable
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Idempotent, because this type is both the hosted service and an
+    /// <see cref="IAsyncDisposable"/> the container owns: a shutting-down host stops it
+    /// and then disposes it, and <see cref="DisposeAsync"/> stops it again. Reading
+    /// <c>_cts</c> twice let the second caller past the guard and onto a field the first
+    /// had already cleared. Claiming it in one step means exactly one caller does the
+    /// teardown and the rest return.
+    /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_cts is null)
+        if (Interlocked.Exchange(ref _cts, null) is not { } cts)
             return;
-        await _cts.CancelAsync();
+        await cts.CancelAsync();
         if (_pump is not null)
         {
             try { await _pump; }
@@ -54,15 +62,10 @@ public sealed class SessionEventFanout : IHostedService, IAsyncDisposable
             sub.Complete();
         _subscribers.Clear();
         await _listener.DisposeAsync();
-        _cts.Dispose();
-        _cts = null;
+        cts.Dispose();
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        if (_cts is not null)
-            await StopAsync(CancellationToken.None);
-    }
+    public async ValueTask DisposeAsync() => await StopAsync(CancellationToken.None);
 
     /// <summary>
     /// Registers immediately. Dispose to unregister. Wakes are coalesced

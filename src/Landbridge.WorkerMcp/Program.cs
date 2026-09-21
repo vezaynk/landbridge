@@ -25,3 +25,12 @@ app.MapWorkerPermissionEndpoint();
 // authorization_servers pointer in here.
 app.MapOAuthResourceMetadata();
 app.Run();
+
+/// <summary>
+/// Exposed so a test host can construct the app. Named rather than the usual
+/// <c>Program</c> because one test assembly hosts all three of these, and three
+/// top-level <c>Program</c> types in the global namespace cannot be told apart
+/// from there. <c>WebApplicationFactory</c> only needs a type to find the
+/// assembly by, so the worker MCP surface is identified by this.
+/// </summary>
+public sealed class WorkerMcpHost;
