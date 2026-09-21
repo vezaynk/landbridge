@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.3" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.8.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
@@ -41,6 +42,11 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Landbridge.Mcp\Landbridge.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Landbridge.Auth\Landbridge.Auth.csproj" />
+    <!-- The three hosts the gateway split into, so their real Program.cs is what
+         the tests boot rather than a reconstruction of it. -->
+    <ProjectReference Include="..\..\src\Landbridge.LeadMcp\Landbridge.LeadMcp.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.WorkerMcp\Landbridge.WorkerMcp.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Dashboard\Landbridge.Dashboard.csproj" />
     <!-- The end-to-end spine test dials the control plane with the real landbridged
          WebSocket channel, so it references the runner. -->
     <ProjectReference Include="..\..\src\Landbridge.Runner\Landbridge.Runner.csproj" />
