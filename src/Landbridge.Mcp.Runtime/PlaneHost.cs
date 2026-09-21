@@ -37,6 +37,22 @@ public static class PlaneHost
             .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
                 LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
+
+        // §5: who this host is, in OAuth terms. Every host here is a resource server —
+        // PublicMcpUrl is the resource a token is minted for — and AuthUrl names the
+        // authorization server that mints it, falling back to the resource id for a
+        // single-origin Instance.
+        //
+        // It is registered for all of them, not just the ones that map OAuth endpoints,
+        // because the challenge handler reads it: without it, LandbridgeAuthenticationHandler
+        // derives the resource-metadata URL from the request and advertises a document on
+        // an origin that does not serve one. That is a 401 pointing at a 404, and nothing
+        // in the exchange says so.
+        builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(
+            builder.Configuration["Landbridge:PublicMcpUrl"]
+                ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PUBLIC_MCP_URL"),
+            builder.Configuration["Landbridge:AuthUrl"]
+                ?? Environment.GetEnvironmentVariable("LANDBRIDGE_AUTH_URL")));
         builder.Services.AddSingleton<RunnerEventSink>();
         builder.Services.AddLandbridgeForwarding();
         builder.Services.AddSingleton(new SessionEventListener(connectionString));

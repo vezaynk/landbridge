@@ -19,4 +19,9 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapMcp().RequireAuthorization();
 app.MapWorkerPermissionEndpoint();
+// §5: this host is a resource server, so it serves the document its own 401
+// challenge advertises (RFC 9728 §3). The authorize/token endpoints and the RFC
+// 8414 document belong to Landbridge.Auth; a client reaches them by following the
+// authorization_servers pointer in here.
+app.MapOAuthResourceMetadata();
 app.Run();

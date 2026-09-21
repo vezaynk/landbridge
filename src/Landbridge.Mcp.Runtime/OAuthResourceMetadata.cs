@@ -6,16 +6,17 @@ namespace Landbridge.Mcp;
 /// <summary>
 /// The two OAuth 2.1 discovery documents an MCP client fetches to learn how to
 /// authenticate to this Instance (spec §5). Plain anonymous HTTP in the narrow,
-/// non-MCP style of <see cref="EnrollmentEndpoints"/> — a client must be able to
+/// non-MCP style of the enrollment endpoints — a client must be able to
 /// read them <em>before</em> it has a token, so neither is behind
 /// <c>RequireAuthorization</c>.
 ///
-/// <para><b>They are served by different hosts.</b> RFC 9728 §3 puts the
+/// <para><b>This is the resource server's half only.</b> RFC 9728 §3 puts the
 /// protected-resource document on the resource server; RFC 8414 §3 puts the
-/// authorization-server document at the issuer. Those are one origin only when one
-/// process is both, so each has its own Map method and each host maps the one it
-/// owns. Mapping the wrong one is how a client ends up fetching metadata whose
-/// <c>issuer</c> does not match the URL it came from, which it MUST reject.</para>
+/// authorization-server document at the issuer, and that one lives in
+/// <c>Landbridge.Auth</c>. It sits in the runtime rather than in one host because
+/// every host that answers a 401 with a resource-metadata challenge has to serve
+/// the document that challenge points at — and a host that challenges without
+/// serving it sends clients to a 404 no error message ever explains.</para>
 ///
 /// <list type="bullet">
 /// <item><c>GET /.well-known/oauth-protected-resource</c> — RFC 9728 Protected
@@ -36,7 +37,7 @@ namespace Landbridge.Mcp;
 /// to prompting the user — supporting that pre-registration path is the documented
 /// follow-up seam.</para>
 /// </summary>
-public static class OAuthMetadataEndpoints
+public static class OAuthResourceMetadataEndpoints
 {
     /// <summary>Emit only populated fields; absent optional members stay off the wire.</summary>
     private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new()

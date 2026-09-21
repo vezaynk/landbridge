@@ -55,14 +55,6 @@ var workerMcpUrl = builder.Configuration["Landbridge:WorkerMcpUrl"]
     ?? Environment.GetEnvironmentVariable("LANDBRIDGE_WORKER_MCP_URL")
     ?? publicMcpUrl;
 
-// This host is the OAuth resource server (§5): PublicMcpUrl is the resource id a
-// token is minted for, and AuthUrl is the authorization server that mints it. The
-// same config object drives the RFC 9728 challenge and the protected-resource
-// document, so the 401 and the metadata cannot name different issuers. Unset,
-// AuthUrl falls back to the resource id — a single-host Instance, as before.
-var authUrl = builder.Configuration["Landbridge:AuthUrl"]
-    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_AUTH_URL");
-builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(publicMcpUrl, authUrl));
 
 // §10 per-task liveness runs on two clocks, both configurable: PerTaskLivenessWindow
 // is how long landbridged may go without asserting the harness process is alive (it
