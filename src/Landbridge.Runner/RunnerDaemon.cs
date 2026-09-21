@@ -137,7 +137,7 @@ public sealed class RunnerDaemon
         StraysReaped = _reaper.Reap(_machineId);
 
         _pump = Task.Run(() => PumpRingAsync(_cts.Token));
-        _ring.Enqueue(new RebootedEvent(_machineId, _clock.GetUtcNow()));
+        _ring.Enqueue(new RebootedEvent(_clock.GetUtcNow()));
 
         // The heartbeat timer carries both machine-level and per-task liveness: the
         // machine heartbeat, and one `alive` per live task (§10). They share a timer
@@ -425,7 +425,6 @@ public sealed class RunnerDaemon
     {
         var reading = _backPressure.Evaluate();
         var heartbeat = new MachineHeartbeat(
-            _machineId,
             Ready: !reading.UnderPressure,
             UnderBackPressure: reading.UnderPressure,
             reading.Load,

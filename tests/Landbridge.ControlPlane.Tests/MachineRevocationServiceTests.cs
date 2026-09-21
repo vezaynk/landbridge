@@ -244,7 +244,7 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
     private static IReadOnlySet<string> Profiles() => new HashSet<string>(StringComparer.Ordinal) { "default" };
 
     private static MachineHeartbeat Ready(Guid machineId) =>
-        new(machineId.ToString(), Ready: true, UnderBackPressure: false,
+        new(Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow);
 
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)

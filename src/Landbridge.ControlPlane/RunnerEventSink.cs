@@ -327,8 +327,7 @@ public sealed class RunnerEventSink(
         if (connectedMachine is not { } machineId)
         {
             logger.LogWarning(
-                "runner announced a reboot as {Machine} on no identified connection; nothing requeued",
-                r.MachineId);
+                "a runner announced a reboot on no identified connection; nothing requeued");
             return;
         }
 

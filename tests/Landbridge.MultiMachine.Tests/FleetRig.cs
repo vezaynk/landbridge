@@ -613,7 +613,7 @@ internal sealed class FleetRig(
         var machine = _machines[alias];
         var wire = Wire(alias);
         var beat = new MachineHeartbeat(
-            wire.ToString(), Ready: _ready.GetValueOrDefault(wire), UnderBackPressure: false,
+            Ready: _ready.GetValueOrDefault(wire), UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: machine.Supervisor.RunningTotal, ["default"],
             DateTimeOffset.UtcNow,
             Processes: machine.Daemon.ReportProcesses());

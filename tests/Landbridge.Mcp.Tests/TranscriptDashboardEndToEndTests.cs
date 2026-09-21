@@ -302,7 +302,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
             await sink.HandleAsync(reply, ct);
         });
         registry.ApplyHeartbeat(MachineId, new MachineHeartbeat(
-            MachineId.ToString(), Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+            Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
             RunningSessions: 0, Profiles: ["default"], At: DateTimeOffset.UtcNow, TranscriptsServable: true));
         return sent;
     }

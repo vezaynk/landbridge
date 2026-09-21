@@ -484,7 +484,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // LeadPrincipal check every other tool here makes — no test-only seam.
         var registry = new RunnerConnectionRegistry(_clock);
         registry.Register(TestMachineIds.For("secret-machine"), new HashSet<string> { "restricted" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(TestMachineIds.For("secret-machine"), Heartbeat("secret-machine", "restricted"));
+        registry.ApplyHeartbeat(TestMachineIds.For("secret-machine"), Heartbeat());
         var worker = new Principal.Worker(new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New()));
 
         var refused = await Assert.ThrowsAsync<McpException>(
@@ -561,8 +561,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 
-    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
-        new(machineId, Ready: true, UnderBackPressure: false,
+    private static MachineHeartbeat Heartbeat(params string[] profiles) =>
+        new(Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 
     [SkippableFact]

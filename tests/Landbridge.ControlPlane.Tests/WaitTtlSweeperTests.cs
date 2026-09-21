@@ -322,7 +322,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
     private static IReadOnlySet<string> Set(params string[] names) =>
         new HashSet<string>(names, StringComparer.Ordinal);
 
-    private static MachineHeartbeat Heartbeat(Guid machineId, params string[] profiles) =>
-        new(machineId.ToString(), Ready: true, UnderBackPressure: false,
+    private static MachineHeartbeat Heartbeat(params string[] profiles) =>
+        new(Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 }

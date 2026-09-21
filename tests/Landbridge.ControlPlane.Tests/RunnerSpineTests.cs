@@ -291,7 +291,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch(M1, second, inherited: true);
 
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
-        await sink.HandleAsync(new RebootedEvent(M1.ToString(), clock.GetUtcNow()), M1, default);
+        await sink.HandleAsync(new RebootedEvent(clock.GetUtcNow()), M1, default);
 
         Assert.Equal(SessionState.Failed, await StateAsync(clock, first));
         Assert.Equal(SessionState.Failed, await StateAsync(clock, second));
@@ -324,7 +324,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch(M1, redispatched);
 
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
-        await sink.HandleAsync(new RebootedEvent(M1.ToString(), clock.GetUtcNow()), M1, default);
+        await sink.HandleAsync(new RebootedEvent(clock.GetUtcNow()), M1, default);
 
         Assert.Equal(SessionState.Failed, await StateAsync(clock, inherited));
         Assert.Equal(SessionState.Working, await StateAsync(clock, redispatched));
@@ -350,7 +350,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch(M1, task);
 
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
-        await sink.HandleAsync(new RebootedEvent(M1.ToString(), clock.GetUtcNow()), M1, default);
+        await sink.HandleAsync(new RebootedEvent(clock.GetUtcNow()), M1, default);
 
         Assert.Equal(SessionState.Working, await StateAsync(clock, task));
     }
@@ -375,7 +375,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch(M1, task, inherited: true);
 
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
-        await sink.HandleAsync(new RebootedEvent("the-name-on-the-box", clock.GetUtcNow()), M1, default);
+        await sink.HandleAsync(new RebootedEvent(clock.GetUtcNow()), M1, default);
 
         Assert.Equal(SessionState.Failed, await StateAsync(clock, task));
     }
@@ -821,7 +821,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     {
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(machineId, Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(machineId, Heartbeat(machineId, "default"));
+        registry.ApplyHeartbeat(machineId, Heartbeat("default"));
         registry.TrackDispatch(machineId, task);
         return registry;
     }
@@ -868,7 +868,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     private static IReadOnlySet<string> Set(params string[] names) =>
         new HashSet<string>(names, StringComparer.Ordinal);
 
-    private static MachineHeartbeat Heartbeat(Guid machineId, params string[] profiles) =>
-        new(machineId.ToString(), Ready: true, UnderBackPressure: false,
+    private static MachineHeartbeat Heartbeat(params string[] profiles) =>
+        new(Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 }

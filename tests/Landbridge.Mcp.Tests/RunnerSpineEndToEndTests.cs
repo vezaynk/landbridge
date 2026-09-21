@@ -81,7 +81,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
         // The machine announces readiness + its profiles; the endpoint nudges dispatch.
         Assert.True(await channel.HeartbeatAsync(
-            new MachineHeartbeat("box-1", Ready: true, UnderBackPressure: false,
+            new MachineHeartbeat(Ready: true, UnderBackPressure: false,
                 new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow), ct));
 
         // ── A DispatchCommand for the task arrives down the dialed socket ───
@@ -174,7 +174,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         });
         Assert.True(await WaitUntilAsync(() => stale.IsConnected, TimeSpan.FromSeconds(15)),
             "the first connection never dialed in");
-        Assert.True(await stale.HeartbeatAsync(Ready("box-1"), ct));
+        Assert.True(await stale.HeartbeatAsync(Ready(), ct));
         Assert.Equal(held, (await staleDispatches.Task.WaitAsync(TimeSpan.FromSeconds(30), ct)).Session);
 
         // ── The reattach: a second connection for the same machine supersedes it ─────
@@ -189,7 +189,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         });
         Assert.True(await WaitUntilAsync(() => live.IsConnected, TimeSpan.FromSeconds(15)),
             "the reattaching connection never dialed in");
-        Assert.True(await live.HeartbeatAsync(Ready("box-1"), ct));
+        Assert.True(await live.HeartbeatAsync(Ready(), ct));
 
         // The reattached machine reports the work it is still running, as a real one would —
         // which lands on the tracking the replacing connection re-derived, and holds the
@@ -275,7 +275,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         });
         Assert.True(await WaitUntilAsync(() => channel.IsConnected, TimeSpan.FromSeconds(15)),
             "the runner never dialed in");
-        Assert.True(await channel.HeartbeatAsync(Ready("box-1"), ct));
+        Assert.True(await channel.HeartbeatAsync(Ready(), ct));
 
         var command = await dispatched.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
         Assert.Equal(task, command.Session);
@@ -329,8 +329,8 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         return res.StatusCode;
     }
 
-    private static MachineHeartbeat Ready(string machineId) =>
-        new(machineId, Ready: true, UnderBackPressure: false,
+    private static MachineHeartbeat Ready() =>
+        new(Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow);
 
     private async Task<SessionId> SeedSubmittedAsync(TeamId team, string criteria, CancellationToken ct)
