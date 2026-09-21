@@ -98,14 +98,7 @@ public class LocalIdentityListenerTests
     {
         // Occupy the same HTTP.sys / managed listener stack HttpListener uses;
         // a raw TcpListener is a different bind on Windows and would not collide.
-        var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-
-        using var occupied = new HttpListener();
-        occupied.Prefixes.Add($"http://127.0.0.1:{port}/");
-        occupied.Start();
+        var (occupied, port) = OccupyLoopback();
         try
         {
             var logs = new List<string>();
@@ -120,6 +113,50 @@ public class LocalIdentityListenerTests
             occupied.Stop();
             occupied.Close();
         }
+    }
+
+    /// <summary>
+    /// A listener holding the loopback port, on a port nothing else has taken.
+    ///
+    /// <para>Retried because finding a free port means releasing it before the occupier
+    /// can take it, and on a loaded runner something else can win that gap. That race is
+    /// not what the test is about, so it is retried rather than failed on — it is the
+    /// most likely cause of this test's intermittent CI failures (#280).</para>
+    ///
+    /// <para><b>IPv4 only, deliberately.</b> The obvious hardening — also occupy
+    /// <c>[::1]</c>, since <see cref="LocalIdentityListener.TryBindLoopback"/> asks for
+    /// both families before falling back to IPv4 — cannot be written and is not needed.
+    /// <c>HttpListener</c>'s prefix parser on Unix rejects <c>http://[::1]:port/</c>
+    /// outright with "Invalid port in prefix", so neither this test nor the code under
+    /// test can hold that prefix. The dual-family attempt never succeeds there; the
+    /// IPv4-only fallback is the one that runs, and that is what this occupies.</para>
+    /// </summary>
+    private static (HttpListener Listener, int Port) OccupyLoopback()
+    {
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            var probe = new TcpListener(IPAddress.Loopback, 0);
+            probe.Start();
+            var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            try
+            {
+                listener.Start();
+                return (listener, port);
+            }
+            catch (Exception e) when (e is HttpListenerException or SocketException)
+            {
+                // Something took the port in the gap between the probe releasing it and
+                // this taking it. Pick another rather than failing the test on it.
+                listener.Close();
+            }
+        }
+
+        throw new InvalidOperationException(
+            "could not hold a free loopback port across ten attempts");
     }
 
     [Fact]
