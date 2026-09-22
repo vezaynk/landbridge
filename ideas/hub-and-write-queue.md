@@ -312,8 +312,9 @@ Each PR's base is the previous branch.
 7. **Core writes** — `POST /core/v1/*` is sync Apply on Core (registry sends included). Façades forward Bearer when `Landbridge:CoreUrl` is set. Not the 202 queue yet.
 8. **Inbox watch** — `watch_lead_inbox` / `watch_inbox` / `GET /lead/inbox/events` wake on Hub SSE, then GET. Mark-read / `PullReceipt` stay writes. Fanout when Hub is unset.
 9. **Thin PlaneHost** — `AddPlane` is store + auth + in-process Apply collaborators. Dispatch LISTEN is Core-only. Inbox fanout LISTEN is MCP-only when Hub is unset. Dashboard never LISTENs.
-10. **Write queue** — `command_queue` + Core SKIP LOCKED drain. MCP hosts enqueue when `Landbridge:WriteQueue` is set and wait for Apply (today's return shape). Hub `GET /commands` is pending. Client-minted `create_session` ids are idempotent. 202/`Prefer: respond-async` is next.
-11. **Core** is `/runner` + dispatch + `Apply` + `/core/v1` + `/relay/validate` + `/preview/connect`.
+10. **Write queue** — `command_queue` + Core SKIP LOCKED drain. MCP hosts enqueue when `Landbridge:WriteQueue` is set and wait for Apply (today's return shape). Hub `GET /commands` is pending. Client-minted `create_session` ids are idempotent.
+11. **`Prefer: respond-async`** — RFC 7240. Default waits for Apply. The preference returns `202` + `Preference-Applied` with `commandId`; Hub `GET /commands/{id}` is the pending view. MCP tools honor the same inbound header.
+12. **Core** is `/runner` + dispatch + `Apply` + `/core/v1` + `/relay/validate` + `/preview/connect`.
 
 Do not stand up two hosts that each run dispatch. Dashboard must not `Apply`.
 
@@ -522,7 +523,7 @@ Ship Part 1 without Part 2. Ship client-minted session ids without Part 2. Do no
 
 1. Membership: `GET` the list on every `change` vs later adding `op`. v1 is GET.
 2. Mutating snapshot reads (`report_unread` cleared by per-session inbox fetch) — keep those writes on Core, even if Hub serves the unread view and LeadMCP/WorkerMCP watch Hub.
-3. MCP 202 vs optional wait-for-Apply timeout (sync default, 202 if `Prefer: respond-async`). Default sync preserves today's Lead loop.
+3. MCP 202 vs optional wait-for-Apply timeout — done: sync default, `Prefer: respond-async` → 202.
 4. Whether `fork_session` (when it exists) uses a client-minted child id the same way as create.
 5. Dual-stack duration for `/runner` WS vs SSE+POST.
 6. Whether `alive`/`tool-call` are last-value or still droppable once they are HTTP — bound the table either way.

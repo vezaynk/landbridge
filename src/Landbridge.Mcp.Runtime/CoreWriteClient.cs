@@ -23,13 +23,16 @@ public sealed class CoreWriteClient(HttpClient http, ILogger<CoreWriteClient> lo
 
     public bool Enabled => http.BaseAddress is not null;
 
-    public async Task<CoreStoreReply> PostAsync<T>(string path, string bearer, T body, CancellationToken ct)
+    public async Task<CoreStoreReply> PostAsync<T>(
+        string path, string bearer, T body, CancellationToken ct, string? prefer = null)
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = JsonContent.Create(body, options: Json),
         };
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        if (!string.IsNullOrWhiteSpace(prefer))
+            req.Headers.TryAddWithoutValidation("Prefer", prefer);
         using var resp = await http.SendAsync(req, ct);
         var reply = await resp.Content.ReadFromJsonAsync<CoreStoreReply>(Json, ct)
             ?? new CoreStoreReply("conflict", Reason: $"core {path} returned {(int)resp.StatusCode} with no body");
@@ -69,7 +72,8 @@ public sealed record CoreStoreReply(
     string? Slug = null,
     string? Rule = null,
     string? Reason = null,
-    string? Detail = null)
+    string? Detail = null,
+    string? CommandId = null)
 {
     public static CoreStoreReply From(StoreResult result) => result switch
     {
@@ -91,19 +95,25 @@ public sealed record CoreStoreReply(
             State: row.Reason,
             SessionId: row.SessionId.ToString("D"),
             Slug: row.Slug,
-            Reason: row.Slug ?? row.Reason),
-        CommandRow.Rejected => new("rejected", Rule: row.Rule, Reason: row.Reason),
-        _ => new("accepted", SessionId: row.SessionId.ToString("D"), Reason: row.Id.ToString("D")),
+            Reason: row.Slug ?? row.Reason,
+            CommandId: row.Id.ToString("D")),
+        CommandRow.Rejected => new(
+            "rejected", Rule: row.Rule, Reason: row.Reason, CommandId: row.Id.ToString("D")),
+        _ => new(
+            "accepted",
+            SessionId: row.SessionId.ToString("D"),
+            CommandId: row.Id.ToString("D"),
+            Reason: $"accepted: command {row.Id:D} session {row.SessionId:D}"),
     };
 
-    public string Describe() => Status == "applied"
-        ? Reason ?? "ok"
-        : throw new McpException(Status switch
-        {
-            "rejected" => $"rejected ({Rule}): {Reason}",
-            "not_found" => Reason ?? "not found",
-            _ => $"conflict: {Reason}",
-        });
+    public string Describe() => Status switch
+    {
+        "applied" => Reason ?? "ok",
+        "accepted" => Reason ?? $"accepted: command {CommandId} session {SessionId}",
+        "rejected" => throw new McpException($"rejected ({Rule}): {Reason}"),
+        "not_found" => throw new McpException(Reason ?? "not found"),
+        _ => throw new McpException($"conflict: {Reason}"),
+    };
 }
 
 public sealed record CoreCreateSessionBody(string TeamId, string Description, string Profile, string? SessionId = null);

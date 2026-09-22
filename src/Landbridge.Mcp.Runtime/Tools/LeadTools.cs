@@ -83,7 +83,8 @@ public sealed class LeadTools(
         if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is not { Enabled: true } core
             || InboundBearer is not { Length: > 0 } bearer)
             return null;
-        return await core.PostAsync(path, bearer, body, ct);
+        var prefer = http.HttpContext?.Request.Headers["Prefer"].ToString();
+        return await core.PostAsync(path, bearer, body, ct, prefer);
     }
 
     private async Task<CoreStoreReply?> QueueWaitAsync(
@@ -92,8 +93,11 @@ public sealed class LeadTools(
         if (http.HttpContext?.RequestServices?.GetService<CommandQueue>() is not { Enabled: true } queue)
             return null;
         var lead = LeadPrincipal;
-        var row = await queue.EnqueueAndWaitAsync(
-            CommandRow.LeadActor, lead.CredentialId, teamId, sessionId, kind, payload, ct);
+        var row = http.HttpContext is { } ctx && PreferHeader.WantsRespondAsync(ctx.Request)
+            ? await queue.EnqueueAsync(
+                CommandRow.LeadActor, lead.CredentialId, teamId, sessionId, kind, payload, ct)
+            : await queue.EnqueueAndWaitAsync(
+                CommandRow.LeadActor, lead.CredentialId, teamId, sessionId, kind, payload, ct);
         return CoreStoreReply.FromCommand(row);
     }
 
@@ -253,7 +257,7 @@ public sealed class LeadTools(
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
         if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.ParkSession, new CommandPayload(), ct) is { } queued)
-            return queued.Status == "applied"
+            return queued.Status is "applied" or "accepted"
                 ? queued.Describe()
                 : queued.Reason ?? "this task is not tracked on any machine, so it cannot be parked";
         if (await CorePostAsync($"/core/v1/sessions/{sessionId}/park",

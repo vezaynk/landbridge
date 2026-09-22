@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Landbridge.Mcp;
 
@@ -70,8 +71,14 @@ public static class CoreWriteEndpoints
         if (!string.IsNullOrWhiteSpace(body.SessionId)
             && Guid.TryParse(body.SessionId, out var parsed))
             clientId = new SessionId(parsed);
+        var sessionId = clientId ?? SessionId.New();
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.LeadActor, Lead(http).Principal!.CredentialId, lead.Claim!.Team.Value,
+                sessionId.Value, CommandRow.CreateSession,
+                new CommandPayload(body.Description, body.Profile.Trim()), ct) is { } accepted)
+            return accepted;
         var result = await store.CreateAsync(
-            new CreateSession(lead.Claim!, lead.Claim!.Team, body.Description, body.Profile.Trim(), clientId), ct);
+            new CreateSession(lead.Claim!, lead.Claim!.Team, body.Description, body.Profile.Trim(), sessionId), ct);
         if (result is StoreResult.Applied a)
         {
             var slug = await ids.SessionAsync(a.Session.Id.Value, ct);
@@ -90,6 +97,11 @@ public static class CoreWriteEndpoints
         var session = await ids.TrySessionAsync(id, ct);
         if (session is null)
             return Store(new StoreResult.NotFound("no such session"));
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.LeadActor, Lead(http).Principal!.CredentialId, lead.Claim!.Team.Value,
+                session.Value.Value, CommandRow.StopSession,
+                new CommandPayload(TtlSeconds: body.TtlSeconds), ct) is { } accepted)
+            return accepted;
         var ttl = body.TtlSeconds is null ? TimeSpan.FromMinutes(5)
             : TimeSpan.FromSeconds(Math.Max(0, body.TtlSeconds.Value));
         var machine = registry.MachineFor(session.Value);
@@ -114,6 +126,10 @@ public static class CoreWriteEndpoints
         var session = await ids.TrySessionAsync(id, ct);
         if (session is null)
             return Store(new StoreResult.NotFound("no such session"));
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.LeadActor, Lead(http).Principal!.CredentialId, lead.Claim!.Team.Value,
+                session.Value.Value, CommandRow.ParkSession, new CommandPayload(), ct) is { } accepted)
+            return accepted;
         var machine = registry.MachineFor(session.Value);
         if (machine is not { } parked)
             return Results.Json(new CoreStoreReply("rejected", Reason: "this task is not tracked on any machine, so it cannot be parked"), CoreWriteClient.Json);
@@ -136,6 +152,11 @@ public static class CoreWriteEndpoints
         var session = await ids.TrySessionAsync(id, ct);
         if (session is null)
             return Store(new StoreResult.NotFound("no such session"));
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.LeadActor, Lead(http).Principal!.CredentialId, lead.Claim!.Team.Value,
+                session.Value.Value, CommandRow.InputResponse,
+                new CommandPayload(Answer: body.Answer), ct) is { } accepted)
+            return accepted;
         var machine = registry.MachineFor(session.Value);
         var live = registry.HasLiveProcess(session.Value);
         var result = await store.SendInputResponseAsync(lead.Claim!, session.Value, machine, body.Answer, live, ct);
@@ -153,6 +174,11 @@ public static class CoreWriteEndpoints
         var session = await ids.TrySessionAsync(id, ct);
         if (session is null)
             return Store(new StoreResult.NotFound("no such session"));
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.LeadActor, Lead(http).Principal!.CredentialId, lead.Claim!.Team.Value,
+                session.Value.Value, CommandRow.InputRequest,
+                new CommandPayload(Text: body.Text), ct) is { } accepted)
+            return accepted;
         var machine = registry.MachineFor(session.Value);
         var live = registry.HasLiveProcess(session.Value);
         var result = await store.SendInputRequestAsync(lead.Claim!, session.Value, machine, body.Text, live, ct);
@@ -168,14 +194,26 @@ public static class CoreWriteEndpoints
         if (session is null)
             return Store(new StoreResult.NotFound("no such session"));
         Actor actor;
-        if (LandbridgeClaims.AsHuman(http.User) is not null)
+        if (LandbridgeClaims.ToPrincipal(http.User) is Principal.Human human)
+        {
             actor = new HumanSession();
+            if (await AcceptIfPreferredAsync(
+                    http, CommandRow.HumanActor, human.HumanId, Guid.Empty,
+                    session.Value.Value, CommandRow.Permission,
+                    new CommandPayload(Option: body.Option?.Trim(), Message: body.Message), ct) is { } humanAccepted)
+                return humanAccepted;
+        }
         else
         {
             var lead = await LeadOn(http, tokens, ids, body.TeamId, ct);
             if (lead.Error is { } err)
                 return err;
             actor = lead.Claim!;
+            if (await AcceptIfPreferredAsync(
+                    http, CommandRow.LeadActor, Lead(http).Principal!.CredentialId, lead.Claim!.Team.Value,
+                    session.Value.Value, CommandRow.Permission,
+                    new CommandPayload(Option: body.Option?.Trim(), Message: body.Message), ct) is { } accepted)
+                return accepted;
         }
         return Store(await store.AnswerPermissionAsync(actor, session.Value, body.Option?.Trim() ?? "", body.Message, ct));
     }
@@ -189,6 +227,13 @@ public static class CoreWriteEndpoints
         if (worker.Caller!.Session.Value.ToString("D") != id
             && !string.Equals(id, worker.Caller.Session.Value.ToString("N"), StringComparison.OrdinalIgnoreCase))
             return Results.Json(new CoreStoreReply("rejected", Reason: "worker token is not for that session"), CoreWriteClient.Json, statusCode: 403);
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.WorkerActor, worker.Caller.Session.Value, worker.Caller.Team.Value,
+                worker.Caller.Session.Value, CommandRow.Report,
+                new CommandPayload(
+                    ResultReference: body.ResultReference, Report: body.Report,
+                    InstanceId: worker.Caller.Instance.Value), ct) is { } accepted)
+            return accepted;
         return Store(await store.ApplyAsync(
             worker.Caller.Session, new ReportResult(worker.Caller, body.ResultReference ?? "", body.Report), ct));
     }
@@ -201,6 +246,13 @@ public static class CoreWriteEndpoints
             return err;
         if (!Enum.TryParse<InputRequestKind>(body.Kind, ignoreCase: true, out var kind))
             return Results.Json(new CoreStoreReply("rejected", Reason: "unknown input kind"), CoreWriteClient.Json);
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.WorkerActor, worker.Caller!.Session.Value, worker.Caller.Team.Value,
+                worker.Caller.Session.Value, CommandRow.Ask,
+                new CommandPayload(
+                    Kind: body.Kind, Text: body.Text ?? body.Answer,
+                    InstanceId: worker.Caller.Instance.Value), ct) is { } accepted)
+            return accepted;
         return Store(await store.ApplyAsync(
             worker.Caller!.Session, new RequestInput(worker.Caller, kind, body.Text ?? body.Answer), ct));
     }
@@ -213,6 +265,13 @@ public static class CoreWriteEndpoints
             return err;
         if (string.IsNullOrWhiteSpace(body.Name) || body.Port is null)
             return Results.Json(new CoreStoreReply("rejected", Reason: "name and port required"), CoreWriteClient.Json);
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.WorkerActor, worker.Caller!.Session.Value, worker.Caller.Team.Value,
+                worker.Caller.Session.Value, CommandRow.RegisterService,
+                new CommandPayload(
+                    Name: body.Name, Port: body.Port,
+                    InstanceId: worker.Caller.Instance.Value), ct) is { } accepted)
+            return accepted;
         return Store(await store.RegisterServiceAsync(worker.Caller!, body.Name, body.Port.Value, ct));
     }
 
@@ -507,6 +566,25 @@ public static class CoreWriteEndpoints
         {
             await registry.SendAsync(dest, new PromptCommand(id), ct);
         }
+    }
+
+    private static async Task<IResult?> AcceptIfPreferredAsync(
+        HttpContext http,
+        string actorKind,
+        Guid actorId,
+        Guid teamId,
+        Guid sessionId,
+        string kind,
+        object payload,
+        CancellationToken ct)
+    {
+        if (!PreferHeader.WantsRespondAsync(http.Request))
+            return null;
+        var queue = http.RequestServices.GetRequiredService<CommandQueue>();
+        var row = await queue.EnqueueAsync(actorKind, actorId, teamId, sessionId, kind, payload, ct);
+        PreferHeader.ApplyRespondAsync(http.Response);
+        return Results.Json(CoreStoreReply.FromCommand(row), CoreWriteClient.Json,
+            statusCode: StatusCodes.Status202Accepted);
     }
 
     private static IResult Store(StoreResult result)

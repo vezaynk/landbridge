@@ -302,7 +302,8 @@ public sealed class WorkerTools(
         if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is not { Enabled: true } core
             || InboundBearer is not { Length: > 0 } bearer)
             return null;
-        return await core.PostAsync(path, bearer, body, ct);
+        var prefer = http.HttpContext?.Request.Headers["Prefer"].ToString();
+        return await core.PostAsync(path, bearer, body, ct, prefer);
     }
 
     private async Task<CoreStoreReply?> QueueWaitAsync(string kind, object payload, CancellationToken ct)
@@ -310,12 +311,14 @@ public sealed class WorkerTools(
         if (http.HttpContext?.RequestServices?.GetService<CommandQueue>() is not { Enabled: true } queue)
             return null;
         var caller = Caller;
-        var row = await queue.EnqueueAndWaitAsync(
-            CommandRow.WorkerActor, caller.Session.Value, caller.Team.Value, caller.Session.Value, kind,
-            payload is CommandPayload p
-                ? p with { InstanceId = caller.Instance.Value }
-                : payload,
-            ct);
+        var body = payload is CommandPayload p
+            ? p with { InstanceId = caller.Instance.Value }
+            : payload;
+        var row = http.HttpContext is { } ctx && PreferHeader.WantsRespondAsync(ctx.Request)
+            ? await queue.EnqueueAsync(
+                CommandRow.WorkerActor, caller.Session.Value, caller.Team.Value, caller.Session.Value, kind, body, ct)
+            : await queue.EnqueueAndWaitAsync(
+                CommandRow.WorkerActor, caller.Session.Value, caller.Team.Value, caller.Session.Value, kind, body, ct);
         return CoreStoreReply.FromCommand(row);
     }
 
