@@ -52,7 +52,9 @@
        keeps them off our closure — which also keeps each apphost startable from its own
        bin, where its full dependency closure lives — while still guaranteeing MSBuild
        builds them before us.
-         Landbridge.Mcp                → the control plane / MCP host under test
+         Landbridge.Mcp                → Core: /runner, dispatch, Apply
+         Landbridge.LeadMcp            → PublicMcpUrl (create_session)
+         Landbridge.WorkerMcp          → WorkerMcpUrl (get_inbox)
          Landbridge.Runner             → landbridged (AssemblyName `landbridged`)
          Landbridge.WorkerHarness      → the scripted no-LLM worker that reports and exits
          Landbridge.Runner.TestHarness → `run` = a worker that emits nothing and reports
@@ -60,6 +62,10 @@
                                      planted stray tree for the restart sweep -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\Landbridge.Mcp\Landbridge.Mcp.csproj"
+                      ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Landbridge.LeadMcp\Landbridge.LeadMcp.csproj"
+                      ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Landbridge.WorkerMcp\Landbridge.WorkerMcp.csproj"
                       ReferenceOutputAssembly="false" PrivateAssets="all" />
     <ProjectReference Include="..\..\src\Landbridge.Runner\Landbridge.Runner.csproj"
                       ReferenceOutputAssembly="false" PrivateAssets="all" />
