@@ -2,11 +2,7 @@ using System.Text.Json.Nodes;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Mcp;
-using Landbridge.Mcp.Auth;
 using Landbridge.Mcp.Dashboard;
-using Landbridge.Mcp.Skills;
-using Landbridge.Mcp.Tools;
-using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry;
 using OpenTelemetry.Trace;
@@ -14,7 +10,6 @@ using OpenTelemetry.Trace;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddPlane();
-builder.AddClassifier();
 
 // §1 tracing: register the control-plane dispatch span source with the tracer
 // ServiceDefaults configured, so DispatchService's `dispatch {task}` span exports
@@ -34,20 +29,8 @@ builder.Services.AddDashboard();
 // going through OAuth at all.
 builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
 
-builder.Services.AddMcpServer()
-    .WithHttpTransport()
-    .WithTools<WorkerTools>()
-    .WithTools<LeadTools>()
-    .WithTools<FrictionTools>()
-    // §10/§14: the skill bundle ships as MCP resources so it reaches every agent
-    // on connect. Stable landbridge:// URIs; scoping is advisory (see SkillResources).
-    .WithResources<SkillResources>()
-    .WithSessionTaskProjection();
-
-// §13: the public MCP URL. The dashboard and a human Lead stay on PublicMcpUrl.
-// Workers may need a different reachability (Aspire boxes in Linux containers
-// dial host.docker.internal); WorkerMcpUrl overrides only the URL stamped onto
-// dispatch / {mcp_url}. Unset, they are the same.
+// §13: WorkerMcpUrl is WorkerMCP. Dispatch stamps it onto mcpServers / {mcp_url}.
+// PublicMcpUrl is LeadMCP (OAuth audience). Unset, they share the default.
 var publicMcpUrl = builder.Configuration["Landbridge:PublicMcpUrl"]
     ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PUBLIC_MCP_URL")
     ?? DispatchService.DefaultPublicMcpUrl;
@@ -156,10 +139,8 @@ app.UseAuthorization();
 // pipeline the rest of the host uses.
 app.UseAntiforgery();
 
-// A browser opening the plane URL (launchSettings, Aspire, a typed :5050) is a
-// GET / with Accept: text/html. MapMcp owns that path for POST (and SSE GET
-// with Accept: text/event-stream), so a human GET is 405 without this bounce.
-// Agents are unaffected: they POST, or GET with text/event-stream.
+// A browser opening the plane URL is a GET / with Accept: text/html. Bounce
+// to the dashboard on this host until Dashboard is the only UI origin.
 app.Use(async (ctx, next) =>
 {
     if (HttpMethods.IsGet(ctx.Request.Method)
@@ -172,19 +153,8 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
-// The MCP endpoint requires an authenticated principal; tools resolve their
-// caller from it.
-app.MapMcp().RequireAuthorization();
-
-// ACP session/request_permission lands in landbridged, which is not an MCP client.
-// POST /worker/permission runs PermissionRelay, authenticated with the worker bearer.
-app.MapWorkerPermissionEndpoint();
-
-// Lead inbox: JSON snapshot plus SSE of the same snapshot. Lead bearer only.
-// Separate from MapMcp's SSE-on-/ and from the human dashboard's 5s poll.
-app.MapLeadInbox();
-
 // The control plane ↔ runner WebSocket (machine-only, §10).
+// MCP is LeadMCP / WorkerMCP, not this host.
 app.MapRunnerEndpoint();
 
 // The §12 web dashboard — the primary human surface (Machine Group, Team view,
@@ -219,5 +189,8 @@ app.Run();
 static bool AcceptsHtml(string accept) =>
     accept.Contains("text/html", StringComparison.OrdinalIgnoreCase);
 
-/// <summary>Exposed so WebApplicationFactory-based tests can host the app.</summary>
-public partial class Program;
+/// <summary>
+/// Exposed so a test host can construct Core without colliding with the
+/// implicit <c>Program</c> types on Auth / Dashboard / LeadMCP / WorkerMCP.
+/// </summary>
+public sealed class CoreHost;

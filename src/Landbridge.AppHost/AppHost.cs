@@ -52,10 +52,19 @@ const string dockerHost = "host.docker.internal";
 // (not an AirPlay port) lets both 127.0.0.1 and host.docker.internal work.
 const int authPort = 5055;
 const int mcpPort = 5050;
+const int leadMcpPort = 5060;
+const int workerMcpHostPort = 5070;
+const int dashboardPort = 5080;
 var mcpUrl = $"http://{mcpHost}:{mcpPort}";
 var authUrl = $"http://{mcpHost}:{authPort}";
 var mcpListenUrl = $"http://+:{mcpPort}";
-var workerMcpUrl = $"http://{dockerHost}:{mcpPort}";
+// LeadMCP is the public MCP resource (OAuth audience, Connect, human harness).
+// WorkerMCP is what landbridged injects; containers dial host.docker.internal.
+var publicMcpUrl = $"http://{mcpHost}:{leadMcpPort}";
+var workerMcpUrl = $"http://{dockerHost}:{workerMcpHostPort}";
+var leadMcpListenUrl = $"http://+:{leadMcpPort}";
+var workerMcpListenUrl = $"http://+:{workerMcpHostPort}";
+var dashboardUrl = $"http://{mcpHost}:{dashboardPort}";
 
 // The relay's fixed dev URL (spec §8.3). Host processes keep loopback; the
 // plane hands landbridged the docker-host form so a container can dial it.
@@ -157,10 +166,9 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     .WithEnvironment("Landbridge__RelayValidation__Bearer", relayValidationBearer)
     .WithEnvironment("Landbridge__RelayUrl", workerRelayUrl)
     .WithEnvironment("Landbridge__PreviewRelayUrl", relayUrl)
-    // Workers in the Linux containers cannot reach 127.0.0.1 on the host.
-    // OAuth / dashboard stay on PublicMcpUrl (loopback) so a human browser is
-    // unchanged; dispatch injects WorkerMcpUrl into mcpServers / {mcp_url}.
-    .WithEnvironment("Landbridge__PublicMcpUrl", mcpUrl)
+    // Dispatch injects WorkerMcpUrl into the worker's mcpServers / {mcp_url}.
+    // PublicMcpUrl is LeadMCP — the OAuth audience and the URL Connect shows.
+    .WithEnvironment("Landbridge__PublicMcpUrl", publicMcpUrl)
     .WithEnvironment("Landbridge__WorkerMcpUrl", workerMcpUrl)
     // §5: the authorization server is its own host. This is what the plane's
     // protected-resource document names and its 401 challenge sends a client to.
@@ -190,7 +198,7 @@ builder.AddProject<Projects.Landbridge_Auth>("auth", options => options.ExcludeL
     .WithEnvironment("ASPNETCORE_URLS", authUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__AuthUrl", authUrl)
-    .WithEnvironment("Landbridge__PublicMcpUrl", mcpUrl)
+    .WithEnvironment("Landbridge__PublicMcpUrl", publicMcpUrl)
     // The same passphrase the dashboard checks, for the same reason.
     .WithEnvironment("Landbridge__Operator__PassphraseHash",
         Landbridge.ControlPlane.Auth.OperatorPassphrase.Hash("dev"))
@@ -211,22 +219,15 @@ var hub = builder.AddProject<Projects.Landbridge_Hub>("hub", options => options.
     .WithHttpHealthCheck("/health");
 mcp.WithEnvironment("Landbridge__HubUrl", hubUrl);
 
-const int leadMcpPort = 5060;
-const int workerMcpHostPort = 5070;
-const int dashboardPort = 5080;
-var leadMcpUrl = $"http://127.0.0.1:{leadMcpPort}";
-var workerMcpHostUrl = $"http://+:{workerMcpHostPort}";
-var dashboardUrl = $"http://127.0.0.1:{dashboardPort}";
-
 builder.AddProject<Projects.Landbridge_LeadMcp>("lead-mcp", options => options.ExcludeLaunchProfile = true)
     .WithReference(landbridgeDb)
     .WaitFor(mcp)
     .WaitFor(hub)
     .WithHttpEndpoint(port: leadMcpPort, targetPort: leadMcpPort, isProxied: false)
-    .WithEnvironment("ASPNETCORE_URLS", leadMcpUrl)
+    .WithEnvironment("ASPNETCORE_URLS", leadMcpListenUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__HubUrl", hubUrl)
-    .WithEnvironment("Landbridge__PublicMcpUrl", mcpUrl)
+    .WithEnvironment("Landbridge__PublicMcpUrl", publicMcpUrl)
     .WithEnvironment("Landbridge__AuthUrl", authUrl)
     .WithHttpHealthCheck("/health");
 
@@ -235,11 +236,12 @@ builder.AddProject<Projects.Landbridge_WorkerMcp>("worker-mcp", options => optio
     .WaitFor(mcp)
     .WaitFor(hub)
     .WithHttpEndpoint(port: workerMcpHostPort, targetPort: workerMcpHostPort, isProxied: false)
-    .WithEnvironment("ASPNETCORE_URLS", workerMcpHostUrl)
+    .WithEnvironment("ASPNETCORE_URLS", workerMcpListenUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__HubUrl", hubUrl)
-    .WithEnvironment("Landbridge__PublicMcpUrl", mcpUrl)
+    .WithEnvironment("Landbridge__PublicMcpUrl", publicMcpUrl)
     .WithEnvironment("Landbridge__AuthUrl", authUrl)
+    .WithEnvironment("Landbridge__Classifier__Url", "http://127.0.0.1:" + classifierPort)
     .WithHttpHealthCheck("/health");
 
 builder.AddProject<Projects.Landbridge_Dashboard>("dashboard", options => options.ExcludeLaunchProfile = true)
@@ -250,7 +252,7 @@ builder.AddProject<Projects.Landbridge_Dashboard>("dashboard", options => option
     .WithEnvironment("ASPNETCORE_URLS", dashboardUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__HubUrl", hubUrl)
-    .WithEnvironment("Landbridge__PublicMcpUrl", mcpUrl)
+    .WithEnvironment("Landbridge__PublicMcpUrl", publicMcpUrl)
     .WithEnvironment("Landbridge__AuthUrl", authUrl)
     .WithEnvironment("Landbridge__Operator__PassphraseHash",
         Landbridge.ControlPlane.Auth.OperatorPassphrase.Hash("dev"))

@@ -2,6 +2,7 @@ using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Landbridge.Mcp.Dashboard;
 
@@ -31,8 +32,9 @@ internal static class DashboardJsonReads
                 return true;
             }
             var config = http.RequestServices.GetRequiredService<IConfiguration>();
+            var oauth = http.RequestServices.GetService<OAuthServerConfig>();
             await http.Response.WriteAsJsonAsync(
-                ConnectEndpoints.Guide(ConnectEndpoints.ResolveMcpUrl(config, http)),
+                ConnectEndpoints.Guide(ConnectEndpoints.ResolveMcpUrl(config, http), http, oauth),
                 DashboardNegotiate.Json, ct);
             return true;
         }

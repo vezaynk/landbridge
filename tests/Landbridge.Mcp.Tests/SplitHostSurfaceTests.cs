@@ -103,6 +103,25 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("report_friction", worker);
     }
 
+    [SkippableFact]
+    public async Task Core_does_not_serve_mcp_tools()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        using var factory = new WebApplicationFactory<CoreHost>().WithWebHostBuilder(b =>
+        {
+            b.UseEnvironment("Development");
+            b.UseSetting("ConnectionStrings:Landbridge", pg.ConnectionString);
+            b.UseSetting("Landbridge:PublicMcpUrl", "https://mcp.example.com");
+            b.UseSetting("Landbridge:AuthUrl", "https://auth.example.com");
+        });
+        using var client = factory.CreateClient();
+        using var resp = await client.PostAsync(
+            "/", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"), cts.Token);
+        Assert.NotEqual(HttpStatusCode.OK, resp.StatusCode);
+        Assert.DoesNotContain("mcp", resp.Content.Headers.ContentType?.MediaType ?? "");
+    }
+
     private async Task<IReadOnlyList<string>> ToolNamesAsync(string which, CancellationToken ct)
     {
         using var host = Start(which);
