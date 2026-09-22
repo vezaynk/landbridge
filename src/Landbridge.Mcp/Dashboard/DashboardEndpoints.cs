@@ -16,7 +16,7 @@ namespace Landbridge.Mcp.Dashboard;
 /// instead of tripping the MCP challenge. The one static asset (the stylesheet) and
 /// the login/logout endpoints are deliberately open.
 ///
-/// A thin transport shell, in the house style of <see cref="EnrollmentEndpoints"/>:
+/// A thin transport shell, in the house style of the enrollment endpoints:
 /// all reads live in <see cref="DashboardQueries"/>, HTML is Blazor Server,
 /// and JSON is <see cref="DashboardJsonReads"/>.
 ///

@@ -53,8 +53,8 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 | **LeadMCP** | public MCP (`PublicMcpUrl`): Lead tools, lead skill, lead inbox *watch* and team-wide read, MCP Tasks. Packages Hub nouns into tool JSON. Mutations accept (Part 2) or `Apply` in-process until then | dispatch, `/runner`, dashboard, worker tools |
 | **WorkerMCP** | worker MCP (`WorkerMcpUrl`): worker tools, worker skill, `get_session` / inbox *watch*. Packages Hub nouns. Mutations same as LeadMCP | dispatch, `/runner`, dashboard, lead tools |
 | **Dashboard** | human operator UI (`/dashboard`): Blazor Server, operator cookie, fleet board, Connect, Teams, machines. Packages Hub nouns into the board. Cookie POSTs (revoke, preview mint, permission) go to Core | MCP tools, dispatch, `/runner`, Hub bind |
-| **Auth** | OAuth AS: `/oauth/authorize`, `/oauth/token`, RFC 8414 metadata. Mints the human session | `Apply`, dispatch, MCP, reading session state. It issues credentials and nothing else |
-| **Core** | `Apply`, command drain, `SKIP LOCKED` dispatch, token **mint** at dispatch, heartbeat **upsert**, `/runner`, `/enroll` | long-lived MCP sockets, Blazor circuits |
+| **Auth** | Credential issuance: OAuth AS (`/oauth/authorize`, `/oauth/token`, RFC 8414 metadata) and machine bootstrap (`/enroll`, `/machine/refresh`). Mints the human session and machine credentials | `Apply`, dispatch, MCP, reading session state. It issues credentials and nothing else |
+| **Core** | `Apply`, command drain, `SKIP LOCKED` dispatch, token **mint** at dispatch, heartbeat **upsert**, `/runner` | long-lived MCP sockets, Blazor circuits |
 | **Hub** | `LISTEN`, tail `hub_queue`, SSE + JSON twins | domain writes, MCP, occupancy apply. Retention `DELETE` on `hub_queue` is the exception |
 | **`landbridged`** | spawn, §10 consume | — |
 
@@ -73,7 +73,7 @@ A harness has **one** MCP connection. LeadMCP is every Lead tool; WorkerMCP is e
                          │
                          ▼
                       Postgres
-           mutations ──► Core (Apply, dispatch, /runner, enroll)
+           mutations ──► Core (Apply, dispatch, /runner)
 ```
 
 Core restart: Hub, both MCP hosts, and Dashboard stay. Blazor circuits and Lead/worker **watches** stay up if they hold Hub SSE (server-side Bearer). That is Part 1 for the board. New `dispatch` waits on Core. `landbridged` keeps `/runner` until Part 3. New accepts need Part 2 once the MCP hosts no longer call `Apply` themselves.
@@ -260,7 +260,7 @@ Dashboard is its own process, a Hub client like LeadMCP/WorkerMCP. The browser t
 2. **Last-value machine facts** — done (base PR): columns + `machine_processes`; doorbell only on `hub_queue`.
 3. **Hub process** — done: `Landbridge.Hub` LISTEN, tail, `event: change`.
 3b. **JSON twins** — GET catalog nouns. Bearer; loopback; SSE scoped like GET.
-3c. **LeadMCP + WorkerMCP + Dashboard** — three Hub clients. Core keeps enroll, `/runner`, dispatch, `Apply`. (The OAuth AS left ahead of them, as `Landbridge.Auth`.)
+3c. **LeadMCP + WorkerMCP + Dashboard** — three Hub clients. Core keeps `/runner`, dispatch, `Apply`. (Credential issuance left ahead of them — the OAuth AS and the machine bootstrap, both in `Landbridge.Auth`.)
 4. Hub session list/document fields those hosts need (occupancy-complete membership, remaining last-value columns, worker-scoped processes). Dashboard composes the board; Hub does not serve `GetObservabilityAsync`.
 5. Dashboard process: Blazor circuit EventSource → Hub (server-side Bearer). Cookie POSTs → Core.
 6. Inbox **watch** on the MCP hosts via Hub SSE + GET. Mark-read / `PullReceipt` stay writes.
@@ -308,7 +308,7 @@ Each PR's base is the previous branch.
 3. **LeadMCP host** — `Landbridge.LeadMcp`: Lead tools, lead skill, lead inbox HTTP. Hub for reads; `SessionStore` writes until Part 2. No `DispatchService`, no `/runner`.
 4. **WorkerMCP host** — `Landbridge.WorkerMcp`: worker tools, worker skill. Same write rule. Point `WorkerMcpUrl` here.
 5. **Dashboard host** — `Landbridge.Dashboard`: Blazor Server, operator cookie, Hub GET + EventSource. Cookie POSTs proxy to Core. No `Apply`, no MCP.
-6. **Strip** Lead/worker MCP and `/dashboard` from Core. Core is enroll + `/runner` + dispatch + `Apply` + mutation HTTP the other hosts call.
+6. **Strip** Lead/worker MCP and `/dashboard` from Core. Core is `/runner` + dispatch + `Apply` + mutation HTTP the other hosts call.
 
 Do not stand up two hosts that each run dispatch. Dashboard must not `Apply`.
 

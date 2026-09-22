@@ -94,7 +94,7 @@ public class WebSocketControlPlaneChannelRefreshTests
 
         var clock = TimeProvider.System;
         var initial = new MachineCredentialFile(
-            "m-1", "https://plane.example.com", "access-0",
+            "m-1", "https://plane.example.com", "https://auth.example.com", "access-0",
             clock.GetUtcNow() + TimeSpan.FromHours(1), "refresh-0", clock.GetUtcNow() + TimeSpan.FromDays(90));
         var persisted = new List<MachineCredentialFile>();
         var persistLock = new object();

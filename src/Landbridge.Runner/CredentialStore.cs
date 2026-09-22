@@ -11,15 +11,20 @@ namespace Landbridge.Runner;
 /// long-lived secret on the box; the access token is short and re-minted (§13),
 /// so this record is rewritten in place on every refresh.
 ///
-/// <para>The <see cref="ControlUrl"/> is the plane's HTTP(S) base (e.g.
-/// <c>https://plane.example.com</c>) — where <c>/enroll</c> and
-/// <c>/machine/refresh</c> live. It is persisted so the daemon can refresh with
+/// <para>Two origins, because credential issuance is not the plane.
+/// <see cref="ControlUrl"/> is the plane's HTTP(S) base (e.g.
+/// <c>https://plane.example.com</c>), which is only where <c>/runner</c> lives;
+/// <see cref="AuthUrl"/> is the authorization server, where <c>/enroll</c> and
+/// <c>/machine/refresh</c> live. The operator supplies the second and the enrollment
+/// exchange answers with the first, so a box is still told one URL. Both are
+/// persisted so the daemon can refresh with
 /// no further argv, and so the runner WebSocket URL can be derived from it when
 /// <c>LANDBRIDGE_CONTROL_URL</c> is not set (see <see cref="CredentialStore.DeriveRunnerWsUrl"/>).</para>
 /// </summary>
 internal sealed record MachineCredentialFile(
     string MachineId,
     string ControlUrl,
+    string AuthUrl,
     string AccessToken,
     DateTimeOffset AccessExpiresAt,
     string RefreshToken,
@@ -32,6 +37,7 @@ internal sealed record EnrollRequest(
 /// <summary>The 200 body from /enroll: a machine identity plus its token pair (§5).</summary>
 internal sealed record EnrollResponse(
     string MachineId,
+    string ControlUrl,
     string AccessToken,
     DateTimeOffset AccessExpiresAt,
     string RefreshToken,
@@ -166,16 +172,17 @@ internal static class CredentialStore
 
     /// <summary>
     /// Exchanges an enrollment token for machine credentials at
-    /// <c>{controlUrl}/enroll</c> and returns the file record (stamped with
-    /// <paramref name="controlUrl"/> for later refresh). Throws
+    /// <c>{authUrl}/enroll</c> and returns the file record — stamped with
+    /// <paramref name="authUrl"/> for later refresh, and with the control URL the
+    /// exchange answered with, which is where <c>/runner</c> lives. Throws
     /// <see cref="EnrollmentException"/> on a non-200 response so the enroll
     /// command can print a clear message and exit non-zero.
     /// </summary>
     public static async Task<MachineCredentialFile> EnrollAsync(
-        HttpClient http, string controlUrl, EnrollRequest request, CancellationToken ct)
+        HttpClient http, string authUrl, EnrollRequest request, CancellationToken ct)
     {
         using var resp = await http.PostAsJsonAsync(
-            CombineBase(controlUrl, "enroll"), request, CredentialsJsonContext.Default.EnrollRequest, ct);
+            CombineBase(authUrl, "enroll"), request, CredentialsJsonContext.Default.EnrollRequest, ct);
         if (!resp.IsSuccessStatusCode)
             throw new EnrollmentException(
                 $"enrollment refused ({(int)resp.StatusCode} {resp.StatusCode}) — the token may be used, expired, or invalid");
@@ -184,28 +191,28 @@ internal static class CredentialStore
             ?? throw new EnrollmentException("enrollment returned an empty body");
 
         return new MachineCredentialFile(
-            body.MachineId, controlUrl, body.AccessToken, body.AccessExpiresAt,
+            body.MachineId, body.ControlUrl, authUrl, body.AccessToken, body.AccessExpiresAt,
             body.RefreshToken, body.RefreshExpiresAt);
     }
 
     /// <summary>
-    /// Mints a fresh access token at <c>{controlUrl}/machine/refresh</c>. Returns
+    /// Mints a fresh access token at <c>{authUrl}/machine/refresh</c>. Returns
     /// null on any non-200 (a dead refresh or a revoked machine) so the refresh
     /// loop treats "the plane said no" as a failed tick rather than a crash.
     /// </summary>
     public static async Task<RefreshResponse?> RefreshAsync(
-        HttpClient http, string controlUrl, string refreshToken, CancellationToken ct)
+        HttpClient http, string authUrl, string refreshToken, CancellationToken ct)
     {
         using var resp = await http.PostAsJsonAsync(
-            CombineBase(controlUrl, "machine/refresh"),
+            CombineBase(authUrl, "machine/refresh"),
             new RefreshRequest(refreshToken), CredentialsJsonContext.Default.RefreshRequest, ct);
         if (!resp.IsSuccessStatusCode)
             return null;
         return await resp.Content.ReadFromJsonAsync(CredentialsJsonContext.Default.RefreshResponse, ct);
     }
 
-    private static string CombineBase(string controlUrl, string relative) =>
-        controlUrl.TrimEnd('/') + "/" + relative;
+    private static string CombineBase(string origin, string relative) =>
+        origin.TrimEnd('/') + "/" + relative;
 }
 
 /// <summary>Thrown when the enrollment exchange fails; carries an operator-facing message.</summary>

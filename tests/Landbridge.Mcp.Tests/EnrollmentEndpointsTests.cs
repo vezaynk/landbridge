@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Landbridge.Auth;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.ControlPlane.Tests;
@@ -238,6 +239,10 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(clock);
+        // The enroll response carries the control URL, which the host reads off its
+        // own OAuth identity — the same value the plane is the resource server for.
+        builder.Services.AddSingleton(
+            OAuthServerConfig.FromPublicMcpUrl("https://plane.example.com"));
 
         var app = builder.Build();
         // Anonymous endpoints: the token in the body is the credential (§5 Bootstrap).

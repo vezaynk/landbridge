@@ -18,6 +18,7 @@ public class CredentialStoreExchangeTests
     private static readonly DateTimeOffset RefreshExp = DateTimeOffset.Parse("2026-10-27T12:00:00+00:00");
 
     private const string Plane = "https://plane.example.com";
+    private const string Auth = "https://auth.example.com";
 
     private static EnrollRequest Request() =>
         new("lbr_e_token", "machine-a", "darwin");
@@ -30,6 +31,7 @@ public class CredentialStoreExchangeTests
         var body = JsonSerializer.Serialize(new
         {
             machineId = "11111111-1111-1111-1111-111111111111",
+            controlUrl = Plane,
             accessToken = "lbr_m_aaa",
             accessExpiresAt = AccessExp,
             refreshToken = "lbr_r_bbb",
@@ -37,16 +39,18 @@ public class CredentialStoreExchangeTests
         });
         using var http = Responding(HttpStatusCode.OK, body, out var sent);
 
-        var creds = await CredentialStore.EnrollAsync(http, Plane, Request(), default);
+        var creds = await CredentialStore.EnrollAsync(http, Auth, Request(), default);
 
         Assert.Equal("11111111-1111-1111-1111-111111111111", creds.MachineId);
         Assert.Equal("lbr_m_aaa", creds.AccessToken);
         Assert.Equal(AccessExp, creds.AccessExpiresAt);
         Assert.Equal("lbr_r_bbb", creds.RefreshToken);
         Assert.Equal(RefreshExp, creds.RefreshExpiresAt);
-        // The plane never echoes its own URL, so the record is stamped with the base
-        // we enrolled against — that is what later refreshes and the derived runner
-        // WebSocket URL are built from, with no further argv.
+        // Two origins, from two places. The record is stamped with the base we enrolled
+        // against — the authorization server, where refreshes go — while the plane's own
+        // URL comes back in the exchange, and is what the runner WebSocket is derived
+        // from. Neither needs further argv.
+        Assert.Equal(Auth, creds.AuthUrl);
         Assert.Equal(Plane, creds.ControlUrl);
     }
 
@@ -245,7 +249,7 @@ public class CredentialStoreExchangeTests
         try
         {
             var enrolled = new MachineCredentialFile(
-                "11111111-1111-1111-1111-111111111111", Plane, "lbr_m_aaa", AccessExp, "lbr_r_bbb", RefreshExp);
+                "11111111-1111-1111-1111-111111111111", Plane, Auth, "lbr_m_aaa", AccessExp, "lbr_r_bbb", RefreshExp);
 
             CredentialStore.Save(dir, enrolled);
 
@@ -260,6 +264,7 @@ public class CredentialStoreExchangeTests
         JsonSerializer.Serialize(new
         {
             machineId = "11111111-1111-1111-1111-111111111111",
+            controlUrl = Plane,
             accessToken = "lbr_m_aaa",
             accessExpiresAt = AccessExp,
             refreshToken = "lbr_r_bbb",

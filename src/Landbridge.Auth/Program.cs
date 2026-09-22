@@ -50,6 +50,13 @@ app.MapDefaultEndpoints();
 // one-time code, not by a bearer this host would have to validate.
 app.MapOAuthAuthorizationServerMetadata();
 app.MapOAuthEndpoints();
+
+// §5 Bootstrap: the machine half of credential issuance. /enroll exchanges a
+// human-issued enrollment token for machine credentials; /machine/refresh re-mints
+// landbridged's short-lived access token. Both anonymous — the presented token is
+// the credential — and both are TokenService calls, which is the whole reason they
+// belong beside the authorization server rather than in the process that owns Apply.
+app.MapEnrollmentEndpoints();
 app.Run();
 
 /// <summary>Exposed so a test host can construct the app.</summary>
