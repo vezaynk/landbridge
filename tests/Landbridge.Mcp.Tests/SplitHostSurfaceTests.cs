@@ -5,6 +5,7 @@ using Landbridge.ControlPlane.Tests;
 using Landbridge.Core;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using ModelContextProtocol.Client;
 
@@ -123,6 +124,35 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
 
         using var dash = await client.GetAsync("/dashboard", cts.Token);
         Assert.Equal(HttpStatusCode.NotFound, dash.StatusCode);
+
+        Assert.NotNull(factory.Services.GetService<SessionEventListener>());
+        Assert.DoesNotContain(factory.Services.GetServices<IHostedService>(), s => s is SessionEventFanout);
+    }
+
+    [SkippableTheory]
+    [InlineData("lead")]
+    [InlineData("worker")]
+    public async Task Mcp_hosts_listen_for_inbox_only_when_hub_is_unset(string which)
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var withoutHub = Start(which);
+        Assert.Contains(withoutHub.Services.GetServices<IHostedService>(), s => s is SessionEventFanout);
+        Assert.Null(withoutHub.Services.GetService<SessionEventListener>());
+
+        using var withHub = Start(which, hubUrl: "http://127.0.0.1:5300");
+        Assert.DoesNotContain(withHub.Services.GetServices<IHostedService>(), s => s is SessionEventFanout);
+        Assert.NotNull(withHub.Services.GetService<SessionEventFanout>());
+        Assert.Null(withHub.Services.GetService<SessionEventListener>());
+    }
+
+    [SkippableFact]
+    public async Task Dashboard_does_not_listen_for_session_events()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var host = Start("dashboard");
+        Assert.DoesNotContain(host.Services.GetServices<IHostedService>(), s => s is SessionEventFanout);
+        Assert.Null(host.Services.GetService<SessionEventFanout>());
+        Assert.Null(host.Services.GetService<SessionEventListener>());
     }
 
     private async Task<IReadOnlyList<string>> ToolNamesAsync(string which, CancellationToken ct)
@@ -177,7 +207,8 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     /// <summary>One started host: its client, its base address, and what to dispose.</summary>
-    private sealed record Started(HttpClient Client, Uri BaseAddress, IDisposable Factory) : IDisposable
+    private sealed record Started(
+        HttpClient Client, Uri BaseAddress, IDisposable Factory, IServiceProvider Services) : IDisposable
     {
         public void Dispose()
         {
@@ -186,15 +217,15 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
         }
     }
 
-    private Started Start(string which) => which switch
+    private Started Start(string which, string? hubUrl = null) => which switch
     {
-        "lead" => Start<LeadMcpHost>(),
-        "worker" => Start<WorkerMcpHost>(),
-        "dashboard" => Start<DashboardHost>(),
+        "lead" => Start<LeadMcpHost>(hubUrl),
+        "worker" => Start<WorkerMcpHost>(hubUrl),
+        "dashboard" => Start<DashboardHost>(hubUrl),
         _ => throw new ArgumentOutOfRangeException(nameof(which), which, "unknown host"),
     };
 
-    private Started Start<TEntry>() where TEntry : class
+    private Started Start<TEntry>(string? hubUrl = null) where TEntry : class
     {
         var factory = new WebApplicationFactory<TEntry>().WithWebHostBuilder(b =>
         {
@@ -204,7 +235,9 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
             b.UseSetting("ConnectionStrings:Landbridge", pg.ConnectionString);
             b.UseSetting("Landbridge:PublicMcpUrl", "https://mcp.example.com");
             b.UseSetting("Landbridge:AuthUrl", "https://auth.example.com");
+            if (hubUrl is not null)
+                b.UseSetting("Landbridge:HubUrl", hubUrl);
         });
-        return new Started(factory.CreateClient(), factory.Server.BaseAddress, factory);
+        return new Started(factory.CreateClient(), factory.Server.BaseAddress, factory, factory.Services);
     }
 }

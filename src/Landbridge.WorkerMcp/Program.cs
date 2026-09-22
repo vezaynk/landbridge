@@ -4,6 +4,7 @@ using Landbridge.Mcp.Tools;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddPlane();
+builder.AddInboxFanout(listen: !PlaneHost.HubConfigured(builder.Configuration));
 builder.AddClassifier();
 builder.Services.AddLandbridgeHubClient();
 builder.Services.AddLandbridgeCoreWrite();

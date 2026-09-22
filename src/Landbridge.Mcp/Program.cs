@@ -9,6 +9,7 @@ using OpenTelemetry.Trace;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddPlane();
+builder.AddDispatchListener();
 
 // §1 tracing: register the control-plane dispatch span source with the tracer
 // ServiceDefaults configured, so DispatchService's `dispatch {task}` span exports
