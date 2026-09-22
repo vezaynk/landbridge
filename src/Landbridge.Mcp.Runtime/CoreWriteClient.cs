@@ -84,6 +84,18 @@ public sealed record CoreStoreReply(
         _ => new("conflict", Reason: "unknown store result"),
     };
 
+    public static CoreStoreReply FromCommand(CommandRow row) => row.Status switch
+    {
+        CommandRow.Applied => new(
+            "applied",
+            State: row.Reason,
+            SessionId: row.SessionId.ToString("D"),
+            Slug: row.Slug,
+            Reason: row.Slug ?? row.Reason),
+        CommandRow.Rejected => new("rejected", Rule: row.Rule, Reason: row.Reason),
+        _ => new("accepted", SessionId: row.SessionId.ToString("D"), Reason: row.Id.ToString("D")),
+    };
+
     public string Describe() => Status == "applied"
         ? Reason ?? "ok"
         : throw new McpException(Status switch
@@ -94,7 +106,7 @@ public sealed record CoreStoreReply(
         });
 }
 
-public sealed record CoreCreateSessionBody(string TeamId, string Description, string Profile);
+public sealed record CoreCreateSessionBody(string TeamId, string Description, string Profile, string? SessionId = null);
 public sealed record CoreSessionBody(string TeamId, int? TtlSeconds = null, string? Answer = null, string? Text = null, string? Option = null, string? Message = null, string? ResultReference = null, string? Report = null, string? Kind = null, string? Name = null, int? Port = null);
 public sealed record CoreBindBody(string MachineId);
 public sealed record CoreProcessStartBody(string Name, string[] Spawn, string? WorkingDirectory, Dictionary<string, string>? Env, bool OpenStdin);

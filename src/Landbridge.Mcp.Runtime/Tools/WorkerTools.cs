@@ -115,6 +115,9 @@ public sealed class WorkerTools(
         CancellationToken ct = default)
     {
         var caller = Caller;
+        if (await QueueWaitAsync(CommandRow.Report,
+                new CommandPayload(ResultReference: resultReference, Report: report), ct) is { } queued)
+            return queued.Describe();
         if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/report",
                 new CoreSessionBody("", ResultReference: resultReference, Report: report), ct) is { } viaCore)
             return viaCore.Describe();
@@ -145,6 +148,9 @@ public sealed class WorkerTools(
                 $"unknown input kind '{kind}'; expected one of: {string.Join(", ", Enum.GetNames<InputRequestKind>())}");
 
         var caller = Caller;
+        if (await QueueWaitAsync(CommandRow.Ask,
+                new CommandPayload(Kind: kind, Text: question), ct) is { } queued)
+            return queued.Describe();
         if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/ask",
                 new CoreSessionBody("", Kind: kind, Text: question), ct) is { } viaCore)
             return viaCore.Describe();
@@ -299,6 +305,20 @@ public sealed class WorkerTools(
         return await core.PostAsync(path, bearer, body, ct);
     }
 
+    private async Task<CoreStoreReply?> QueueWaitAsync(string kind, object payload, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<CommandQueue>() is not { Enabled: true } queue)
+            return null;
+        var caller = Caller;
+        var row = await queue.EnqueueAndWaitAsync(
+            CommandRow.WorkerActor, caller.Session.Value, caller.Team.Value, caller.Session.Value, kind,
+            payload is CommandPayload p
+                ? p with { InstanceId = caller.Instance.Value }
+                : payload,
+            ct);
+        return CoreStoreReply.FromCommand(row);
+    }
+
 
     [McpServerTool(Name = "write_process"),
      Description("Write text to a background process's stdin — a command for a REPL, an answer a tool is " +
@@ -340,6 +360,9 @@ public sealed class WorkerTools(
         CancellationToken ct)
     {
         var caller = Caller;
+        if (await QueueWaitAsync(CommandRow.RegisterService,
+                new CommandPayload(Name: name, Port: port), ct) is { } queued)
+            return queued.Describe();
         if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/services",
                 new CoreSessionBody("", Name: name, Port: port), ct) is { } viaCore)
             return viaCore.Describe();

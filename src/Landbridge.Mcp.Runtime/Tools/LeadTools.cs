@@ -86,6 +86,17 @@ public sealed class LeadTools(
         return await core.PostAsync(path, bearer, body, ct);
     }
 
+    private async Task<CoreStoreReply?> QueueWaitAsync(
+        Guid teamId, Guid sessionId, string kind, object payload, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<CommandQueue>() is not { Enabled: true } queue)
+            return null;
+        var lead = LeadPrincipal;
+        var row = await queue.EnqueueAndWaitAsync(
+            CommandRow.LeadActor, lead.CredentialId, teamId, sessionId, kind, payload, ct);
+        return CoreStoreReply.FromCommand(row);
+    }
+
     private Principal.Lead LeadPrincipal
     {
         get
@@ -161,11 +172,15 @@ public sealed class LeadTools(
             throw new McpException("profile is required; call list_profiles and pass an exact name.");
 
         var lead = await LeadOn(teamId, ct);
+        var sessionId = SessionId.New();
+        if (await QueueWaitAsync(lead.Team.Value, sessionId.Value, CommandRow.CreateSession,
+                new CommandPayload(description, profile.Trim()), ct) is { } queued)
+            return queued.Slug ?? queued.Describe();
         if (await CorePostAsync("/core/v1/create-session",
-                new CoreCreateSessionBody(teamId, description, profile.Trim()), ct) is { } viaCore)
+                new CoreCreateSessionBody(teamId, description, profile.Trim(), sessionId.Value.ToString("D")), ct) is { } viaCore)
             return viaCore.Slug ?? viaCore.Describe();
         var result = await store.CreateAsync(
-            new CreateSession(lead, lead.Team, description, profile.Trim()), ct);
+            new CreateSession(lead, lead.Team, description, profile.Trim(), sessionId), ct);
 
         return result switch
         {
@@ -195,6 +210,9 @@ public sealed class LeadTools(
         var ttl = ResolveStopTtl(ttlSeconds);
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.StopSession,
+                new CommandPayload(TtlSeconds: ttlSeconds), ct) is { } queued)
+            return queued.Describe();
         if (await CorePostAsync($"/core/v1/sessions/{sessionId}/stop",
                 new CoreSessionBody(teamId, TtlSeconds: ttlSeconds), ct) is { } viaCore)
             return viaCore.Describe();
@@ -234,6 +252,10 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.ParkSession, new CommandPayload(), ct) is { } queued)
+            return queued.Status == "applied"
+                ? queued.Describe()
+                : queued.Reason ?? "this task is not tracked on any machine, so it cannot be parked";
         if (await CorePostAsync($"/core/v1/sessions/{sessionId}/park",
                 new CoreSessionBody(teamId), ct) is { } viaCore)
             return viaCore.Status == "applied"
@@ -277,6 +299,9 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.InputResponse,
+                new CommandPayload(Answer: answer), ct) is { } queued)
+            return queued.Describe();
         if (await CorePostAsync($"/core/v1/sessions/{sessionId}/input-response",
                 new CoreSessionBody(teamId, Answer: answer), ct) is { } viaCore)
             return viaCore.Describe();
@@ -306,6 +331,9 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.InputRequest,
+                new CommandPayload(Text: text), ct) is { } queued)
+            return queued.Describe();
         if (await CorePostAsync($"/core/v1/sessions/{sessionId}/input-request",
                 new CoreSessionBody(teamId, Text: text), ct) is { } viaCore)
             return viaCore.Describe();
@@ -364,6 +392,9 @@ public sealed class LeadTools(
         // holding its own tool call open, so there is nothing to redispatch and no transcript
         // to resume (§11). Escalation is enforced on the row inside the store, so a Lead
         // answering one it already handed over is refused there rather than here.
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.Permission,
+                new CommandPayload(Option: option.Trim(), Message: message), ct) is { } queued)
+            return queued.Describe();
         if (await CorePostAsync($"/core/v1/sessions/{sessionId}/permission",
                 new CoreSessionBody(teamId, Option: option.Trim(), Message: message), ct) is { } viaCore)
             return viaCore.Describe();

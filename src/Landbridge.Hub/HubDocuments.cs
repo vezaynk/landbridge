@@ -208,6 +208,18 @@ public sealed record InstanceDocument(
     DateTimeOffset CreatedAt,
     Guid? MachineId);
 
+public sealed record CommandDocument(
+    Guid Id,
+    Guid SessionId,
+    Guid TeamId,
+    string Kind,
+    string Status,
+    string? Rule,
+    string? Reason,
+    string? Slug,
+    DateTimeOffset AcceptedAt,
+    DateTimeOffset? AppliedAt);
+
 public sealed record UsageDocument(
     Guid SessionId,
     string? Model,

@@ -66,8 +66,12 @@ public static class CoreWriteEndpoints
         var lead = await LeadOn(http, tokens, ids, body.TeamId, ct);
         if (lead.Error is { } err)
             return err;
+        SessionId? clientId = null;
+        if (!string.IsNullOrWhiteSpace(body.SessionId)
+            && Guid.TryParse(body.SessionId, out var parsed))
+            clientId = new SessionId(parsed);
         var result = await store.CreateAsync(
-            new CreateSession(lead.Claim!, lead.Claim!.Team, body.Description, body.Profile.Trim()), ct);
+            new CreateSession(lead.Claim!, lead.Claim!.Team, body.Description, body.Profile.Trim(), clientId), ct);
         if (result is StoreResult.Applied a)
         {
             var slug = await ids.SessionAsync(a.Session.Id.Value, ct);

@@ -139,6 +139,18 @@ public sealed record HubTeamDocument(
     long ForwardedBytes,
     DateTimeOffset? BytesReportedAt);
 
+public sealed record HubCommandDocument(
+    Guid Id,
+    Guid SessionId,
+    Guid TeamId,
+    string Kind,
+    string Status,
+    string? Rule,
+    string? Reason,
+    string? Slug,
+    DateTimeOffset AcceptedAt,
+    DateTimeOffset? AppliedAt);
+
 public sealed record HubProcessDocument(
     Guid Id,
     Guid MachineId,

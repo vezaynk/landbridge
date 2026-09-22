@@ -171,6 +171,15 @@ public sealed class HubCaller
                 return mid is { } m && await MayMachineProcessesAsync(db, m, ct);
             }
 
+            if (topic is HubQueueRow.CommandsTopic)
+            {
+                var cmd = await db.Commands.AsNoTracking()
+                    .Where(c => c.Id == entityId)
+                    .Select(c => (Guid?)c.SessionId)
+                    .FirstOrDefaultAsync(ct);
+                return cmd is { } sid && sid == WorkerSession;
+            }
+
             return entityId == WorkerSession
                 && topic is HubQueueRow.SessionTopic or HubQueueRow.EventsTopic
                     or HubQueueRow.ExchangeTopic or HubQueueRow.ServicesTopic;
@@ -190,6 +199,15 @@ public sealed class HubCaller
                 .Select(g => (Guid?)g.TeamId)
                 .FirstOrDefaultAsync(ct);
             return team is { } t && MayTeam(t);
+        }
+
+        if (topic is HubQueueRow.CommandsTopic)
+        {
+            var cmd = await db.Commands.AsNoTracking()
+                .Where(c => c.Id == entityId)
+                .Select(c => new { c.SessionId, c.TeamId })
+                .FirstOrDefaultAsync(ct);
+            return cmd is not null && MaySession(cmd.SessionId, cmd.TeamId);
         }
 
         if (topic is HubQueueRow.PreviewsTopic)
@@ -238,6 +256,10 @@ public sealed class HubCaller
                     ? q.Where(r => db.MachineProcesses
                         .Any(p => p.Id == r.EntityId && owned.Contains(p.MachineId)))
                     : q.Where(r => false);
+            if (topic is HubQueueRow.CommandsTopic)
+                return WorkerSession is { } cmdSession
+                    ? q.Where(r => db.Commands.Any(c => c.Id == r.EntityId && c.SessionId == cmdSession))
+                    : q.Where(r => false);
             return WorkerSession is { } sid
                 ? q.Where(r => r.EntityId == sid)
                 : q.Where(r => false);
@@ -254,6 +276,9 @@ public sealed class HubCaller
             if (topic is HubQueueRow.PreviewsTopic)
                 return q.Where(r => db.Set<PreviewMappingRow>()
                     .Any(p => p.Id == r.EntityId && teams.Contains(p.TeamId)));
+            if (topic is HubQueueRow.CommandsTopic)
+                return q.Where(r => db.Commands
+                    .Any(c => c.Id == r.EntityId && teams.Contains(c.TeamId)));
             return q.Where(r => db.Sessions
                 .Any(s => s.Id == r.EntityId && teams.Contains(s.TeamId)));
         }

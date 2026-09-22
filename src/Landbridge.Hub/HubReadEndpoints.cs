@@ -31,6 +31,8 @@ public static class HubReadEndpoints
         app.MapGet("/teams/{id}", GetTeamAsync);
         app.MapGet("/friction", ListFrictionAsync);
         app.MapGet("/lead-events", ListLeadEventsAsync);
+        app.MapGet("/commands", ListCommandsAsync);
+        app.MapGet("/commands/{id:guid}", GetCommandAsync);
         return app;
     }
 
@@ -310,6 +312,33 @@ public static class HubReadEndpoints
         if (team.Error is { } teamErr)
             return teamErr;
         return Json(await reads.LeadEventsAsync(caller, team.Id, ct));
+    }
+
+    private static async Task<IResult> ListCommandsAsync(
+        HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
+        string? teamId, string? status, CancellationToken ct)
+    {
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
+            return err;
+        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        if (team.Error is { } teamErr)
+            return teamErr;
+        return Json(await reads.CommandsAsync(caller, team.Id, status, ct));
+    }
+
+    private static async Task<IResult> GetCommandAsync(
+        HttpContext http, TokenService tokens, HubReads reads, Guid id, CancellationToken ct)
+    {
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
+            return err;
+        var doc = await reads.CommandAsync(id, ct);
+        if (doc is null || !caller.MayTeam(doc.TeamId))
+            return NotFound();
+        if (caller.Principal is Principal.Worker && doc.SessionId != caller.WorkerSession)
+            return NotFound();
+        return Json(doc);
     }
 
     private static Task<HubCaller> GateAsync(HttpContext http, TokenService tokens, CancellationToken ct) =>

@@ -33,7 +33,21 @@ public sealed class SessionStore(
 {
     public async Task<StoreResult> CreateAsync(CreateSession command, CancellationToken ct = default)
     {
-        var id = SessionId.New();
+        var id = command.Id ?? SessionId.New();
+        if (command.Id is { } clientId)
+        {
+            var existing = await db.Sessions.AsNoTracking()
+                .FirstOrDefaultAsync(s => s.Id == clientId.Value, ct);
+            if (existing is not null)
+            {
+                if (existing.TeamId == command.Team.Value
+                    && existing.Description == command.Description
+                    && existing.Profile == command.Profile)
+                    return new StoreResult.Applied(existing.ToDomain(), []);
+                return new StoreResult.Conflict(
+                    "that session id already exists with a different brief or team");
+            }
+        }
         var ns = $"team-{command.Team}/session-{id}";
         var result = SessionStateMachine.Create(command, id, ns);
         if (result is TransitionResult.Rejected r)

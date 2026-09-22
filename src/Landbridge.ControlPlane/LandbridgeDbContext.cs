@@ -23,6 +23,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     public DbSet<LeadTeamRow> LeadTeams => Set<LeadTeamRow>();
     public DbSet<HubQueueRow> HubQueue => Set<HubQueueRow>();
     public DbSet<MachineProcessRow> MachineProcesses => Set<MachineProcessRow>();
+    public DbSet<CommandRow> Commands => Set<CommandRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "landbridge_session_events";
@@ -32,6 +33,9 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     /// Dispatch must not LISTEN here.
     /// </summary>
     public const string HubChannel = "landbridge_hub_events";
+
+    /// <summary>Command drain doorbell. Core LISTENs; façades NOTIFY on accept.</summary>
+    public const string CommandChannel = "landbridge_commands";
 
     /// <summary>One live lead↔machine binding per human (§8.3 human path) — named so
     /// <see cref="LeadMachineBindingService"/> can tell the two races apart from the
@@ -282,6 +286,17 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.Property(f => f.Seq).UseIdentityAlwaysColumn();
             e.HasIndex(f => f.At);
             e.HasIndex(f => f.TeamId);
+        });
+
+        b.Entity<CommandRow>(e =>
+        {
+            e.ToTable("command_queue");
+            e.HasKey(c => c.Id);
+            e.HasIndex(c => new { c.ActorKind, c.ActorId, c.IdempotencyKey }).IsUnique();
+            e.HasIndex(c => c.Status).HasFilter("status = 'queued'");
+            e.HasIndex(c => c.TeamId);
+            e.HasIndex(c => c.SessionId);
+            e.Property(c => c.Payload).HasColumnType("jsonb");
         });
 
         b.Entity<HubQueueRow>(e =>

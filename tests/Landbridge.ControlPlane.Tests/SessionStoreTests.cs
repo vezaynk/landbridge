@@ -47,6 +47,24 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Create_with_a_client_id_is_idempotent()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var id = SessionId.New();
+        var store = NewStore(db);
+        var first = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
+            new CreateSession(Lead, Team, "pnpm test", "default", id)));
+        var second = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
+            new CreateSession(Lead, Team, "pnpm test", "default", id)));
+        Assert.Equal(first.Session.Id, second.Session.Id);
+        Assert.Equal(1, await db.Sessions.CountAsync(s => s.Id == id.Value));
+        var clash = Assert.IsType<StoreResult.Conflict>(await store.CreateAsync(
+            new CreateSession(Lead, Team, "other brief", "default", id)));
+        Assert.Contains("already exists", clash.Reason);
+    }
+
+    [SkippableFact]
     public async Task Create_appends_hub_outbox_rows_in_the_same_commit()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

@@ -312,7 +312,8 @@ Each PR's base is the previous branch.
 7. **Core writes** — `POST /core/v1/*` is sync Apply on Core (registry sends included). Façades forward Bearer when `Landbridge:CoreUrl` is set. Not the 202 queue yet.
 8. **Inbox watch** — `watch_lead_inbox` / `watch_inbox` / `GET /lead/inbox/events` wake on Hub SSE, then GET. Mark-read / `PullReceipt` stay writes. Fanout when Hub is unset.
 9. **Thin PlaneHost** — `AddPlane` is store + auth + in-process Apply collaborators. Dispatch LISTEN is Core-only. Inbox fanout LISTEN is MCP-only when Hub is unset. Dashboard never LISTENs.
-10. **Core** is `/runner` + dispatch + `Apply` + `/core/v1` + `/relay/validate` + `/preview/connect`.
+10. **Write queue** — `command_queue` + Core SKIP LOCKED drain. MCP hosts enqueue when `Landbridge:WriteQueue` is set and wait for Apply (today's return shape). Hub `GET /commands` is pending. Client-minted `create_session` ids are idempotent. 202/`Prefer: respond-async` is next.
+11. **Core** is `/runner` + dispatch + `Apply` + `/core/v1` + `/relay/validate` + `/preview/connect`.
 
 Do not stand up two hosts that each run dispatch. Dashboard must not `Apply`.
 
