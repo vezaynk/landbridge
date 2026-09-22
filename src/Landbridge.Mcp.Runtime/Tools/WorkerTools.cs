@@ -4,9 +4,11 @@ using System.Text.Json.Serialization;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using static Landbridge.Mcp.Tools.ToolResults;
@@ -229,8 +231,41 @@ public sealed class WorkerTools(
                  "a name that is not taken, to work out why a start was refused, and above all to find " +
                  "out what an earlier session left running when you have been sent to clean up. Any " +
                  "session on the machine may stop a process.")]
-    public Task<IReadOnlyList<RunningThing>> ListProcesses(CancellationToken ct) =>
-        processes.ListAsync(Caller.Session, ct);
+    public async Task<IReadOnlyList<RunningThing>> ListProcesses(CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<HubClient>() is { Enabled: true } hub
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var session = await hub.GetAsync<HubSessionDocument>(
+                $"/sessions/{Caller.Session.Value:D}", bearer, ct);
+            var machineId = session?.Instances
+                .FirstOrDefault(i => i.Id == session.CurrentInstanceId)?.MachineId
+                ?? session?.Instances.LastOrDefault(i => !i.Revoked)?.MachineId;
+            if (machineId is { } mid)
+            {
+                var procs = await hub.GetAsync<List<HubProcessDocument>>(
+                    $"/machines/{mid:D}/processes", bearer, ct);
+                if (procs is not null)
+                    return procs.Select(p => new RunningThing(
+                        p.Name, p.State.ToLowerInvariant(), p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen))
+                        .ToList();
+            }
+        }
+
+        return await processes.ListAsync(Caller.Session, ct);
+    }
+
+    private string? InboundBearer
+    {
+        get
+        {
+            var header = http.HttpContext?.Request.Headers.Authorization.ToString();
+            const string prefix = "Bearer ";
+            return header is { Length: > 0 } && header.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? header[prefix.Length..].Trim()
+                : null;
+        }
+    }
 
 
     [McpServerTool(Name = "write_process"),

@@ -3,9 +3,11 @@ using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using static Landbridge.Mcp.Tools.ToolResults;
@@ -25,8 +27,8 @@ namespace Landbridge.Mcp.Tools;
 /// for review, disposition for cancel), so nothing here interprets session content.
 ///
 /// <para><c>list_profiles</c> is the one tool with no Team in it: a declared
-/// runner profile is machine config no Team owns. It reads last-value machine
-/// rows through <see cref="MachineLive"/>.
+/// runner profile is machine config no Team owns. It reads Hub <c>/machines</c>
+/// (live last-spoke) when Hub is configured, otherwise <see cref="MachineLive"/>.
 /// The Lead-principal check at its top is the whole of its authority.</para>
 ///
 /// <para>The last three tools are the §8.3 <b>human path</b>: a Lead binds an
@@ -56,6 +58,26 @@ public sealed class LeadTools(
     /// rather than a bare authorization error, so the displaced session's harness
     /// does not invent an explanation for the denial.
     /// </summary>
+    private string? InboundBearer
+    {
+        get
+        {
+            var header = http.HttpContext?.Request.Headers.Authorization.ToString();
+            const string prefix = "Bearer ";
+            return header is { Length: > 0 } && header.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? header[prefix.Length..].Trim()
+                : null;
+        }
+    }
+
+    private async Task<T?> HubGetAsync<T>(string path, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<HubClient>() is not { Enabled: true } hub
+            || InboundBearer is not { Length: > 0 } bearer)
+            return default;
+        return await hub.GetAsync<T>(path, bearer, ct);
+    }
+
     private Principal.Lead LeadPrincipal
     {
         get
@@ -336,6 +358,10 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var filter = await SessionFilterAsync(sessionId, sessionIds, ct);
+        if (filter is not { Count: > 0 }
+            && await HubGetAsync<List<HubSessionListItem>>($"/sessions?teamId={Uri.EscapeDataString(teamId)}", ct)
+                is { } rows)
+            return HubPackager.InboxIdentifiers(rows);
         return await store.GetLeadInboxAsync(lead.Team, filter, ct, filter is { Count: > 0 } ? lead : null);
     }
 
@@ -382,7 +408,11 @@ public sealed class LeadTools(
     {
         var actor = await LeadOn(teamId, ct);
         var lead = LeadPrincipal;
-        var state = await store.GetTeamStateAsync(actor.Team, ct);
+        var state = await HubGetAsync<List<HubSessionListItem>>(
+                $"/sessions?teamId={Uri.EscapeDataString(teamId)}&hidden=true", ct)
+            is { } rows
+            ? HubPackager.TeamState(teamId, rows)
+            : await store.GetTeamStateAsync(actor.Team, ct);
         // The binding keys on the human, not the Team, so it is composed on here
         // rather than read out of the Team's rows (§8.3 human path). A lead
         // credential with no human attribution simply shows no binding.
@@ -409,6 +439,8 @@ public sealed class LeadTools(
     public async Task<ProfileRoutingView> ListProfiles(CancellationToken ct)
     {
         _ = LeadPrincipal;
+        if (await HubGetAsync<List<HubMachine>>("/machines", ct) is { } machines)
+            return HubPackager.Profiles(machines);
 
         var view = await MachineLive.RoutingAsync(
             db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, ct);

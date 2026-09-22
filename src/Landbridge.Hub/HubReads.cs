@@ -32,7 +32,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
             s.State, s.OccupancyDesired, s.OccupancyObserved, s.Health, s.Hidden,
             s.MessageState, s.PendingSpawn, s.ReportUnread, s.MessageId, s.InputKind,
             s.BlockedAt, s.ParkMachine, s.CurrentInstanceId, s.MessageOpenedAt,
-            s.LastMessageClosedAt)).ToList();
+            s.LastMessageClosedAt, s.Namespace, s.Attempt,
+            s.WorkerReport != null, s.BlockedAt != null && s.InputKind != null,
+            s.ContinuesSessionId, s.CompletionProvenance,
+            s.InfrastructureRequeues, s.LastRequeueReason)).ToList();
     }
 
     public async Task<SessionDocument?> SessionAsync(Guid id, CancellationToken ct)

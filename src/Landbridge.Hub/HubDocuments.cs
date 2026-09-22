@@ -26,7 +26,15 @@ public sealed record SessionListItem(
     Guid? ParkMachine,
     Guid? CurrentInstanceId,
     DateTimeOffset? MessageOpenedAt,
-    DateTimeOffset? LastMessageClosedAt);
+    DateTimeOffset? LastMessageClosedAt,
+    string Namespace,
+    int Attempt,
+    bool HasReport,
+    bool HasQuestion,
+    Guid? ContinuesSessionId,
+    VerdictProvenance? CompletionProvenance,
+    int InfrastructureRequeues,
+    LivenessLossReason? LastRequeueReason);
 
 public sealed record SessionDocument(
     Guid Id,

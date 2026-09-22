@@ -308,7 +308,8 @@ Each PR's base is the previous branch.
 3. **LeadMCP / WorkerMCP hosts** — done.
 4. **Cutover** — `PublicMcpUrl` is LeadMCP, `WorkerMcpUrl` is WorkerMCP. Core no longer maps MCP tools or the lead inbox. Enroll is Auth.
 5. **Dashboard origin** — browser hits Dashboard; Core no longer maps `/dashboard`. Cookie POSTs still `Apply` in Dashboard until Part 2.
-6. **Core** is `/runner` + dispatch + `Apply` + mutation HTTP (`/relay/validate`, `/preview/connect`).
+6. **Façade reads** — LeadMCP `list_profiles` / `get_team_state` / team-wide inbox identifiers, and WorkerMCP `list_processes`, package Hub nouns (store fallback when Hub is unset). Per-session inbox fetch still writes. Dashboard board still `DashboardQueries`.
+7. **Core** is `/runner` + dispatch + `Apply` + mutation HTTP (`/relay/validate`, `/preview/connect`).
 
 Do not stand up two hosts that each run dispatch. Dashboard must not `Apply`.
 
