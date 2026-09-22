@@ -4,6 +4,8 @@ using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.Channels;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
 namespace Landbridge.Mcp;
@@ -70,13 +72,26 @@ public sealed class HubClient(HttpClient http, ILogger<HubClient> logger)
     }
 
     /// <summary>
+    /// The inbound Bearer, or null. Dashboard cookies are copied onto this
+    /// header before the host talks to Hub.
+    /// </summary>
+    public static string? BearerOf(HttpContext http)
+    {
+        var header = http.Request.Headers.Authorization.ToString();
+        const string prefix = "Bearer ";
+        return header is { Length: > 0 } && header.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? header[prefix.Length..].Trim()
+            : null;
+    }
+
+    /// <summary>
     /// Membership SSE. Reconnects with <c>Last-Event-ID</c>. Catch-up on first
     /// open is coalesced by the caller; this just yields <c>event: change</c>.
     /// </summary>
     public async IAsyncEnumerable<HubChange> WatchAsync(
         string path, string bearer, [EnumeratorCancellation] CancellationToken ct)
     {
-        var ch = System.Threading.Channels.Channel.CreateUnbounded<HubChange>();
+        var ch = Channel.CreateUnbounded<HubChange>();
         var pump = PumpAsync(ch.Writer, path, bearer, ct);
         try
         {
@@ -90,8 +105,40 @@ public sealed class HubClient(HttpClient http, ILogger<HubClient> logger)
         }
     }
 
+    /// <summary>
+    /// Live SSE for inbox watch. Skips <c>hub_queue</c> catch-up (the snapshot
+    /// GET is complete). The first yielded value is <see cref="HubChange.Live"/>
+    /// once Hub has subscribed, so the caller snapshots after the waiter is up.
+    /// </summary>
+    public async IAsyncEnumerable<HubChange> WatchLiveAsync(
+        string path, string bearer, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var opened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ch = Channel.CreateUnbounded<HubChange>();
+        var pump = PumpAsync(ch.Writer, WithAfter(path, long.MaxValue), bearer, ct, opened);
+        try
+        {
+            await opened.Task.WaitAsync(ct);
+            yield return HubChange.Live;
+            await foreach (var change in ch.Reader.ReadAllAsync(ct))
+                yield return change;
+        }
+        finally
+        {
+            try { await pump; }
+            catch (OperationCanceledException) { }
+        }
+    }
+
+    internal static string WithAfter(string path, long after)
+    {
+        var sep = path.Contains('?', StringComparison.Ordinal) ? '&' : '?';
+        return $"{path}{sep}after={after}";
+    }
+
     private async Task PumpAsync(
-        System.Threading.Channels.ChannelWriter<HubChange> writer, string path, string bearer, CancellationToken ct)
+        ChannelWriter<HubChange> writer, string path, string bearer, CancellationToken ct,
+        TaskCompletionSource? opened = null)
     {
         long last = 0;
         try
@@ -110,11 +157,18 @@ public sealed class HubClient(HttpClient http, ILogger<HubClient> logger)
                     if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                     {
                         logger.LogWarning("hub SSE {Path} refused the forwarded bearer: {Status}", path, (int)resp.StatusCode);
+                        opened?.TrySetException(new HttpRequestException(
+                            $"hub SSE {path} refused the forwarded bearer: {(int)resp.StatusCode}"));
                         return;
                     }
                     if (resp.StatusCode is HttpStatusCode.NotFound)
+                    {
+                        opened?.TrySetException(new HttpRequestException($"hub SSE {path} not found"));
                         return;
+                    }
                     resp.EnsureSuccessStatusCode();
+                    opened?.TrySetResult();
+                    opened = null;
                     await using var stream = await resp.Content.ReadAsStreamAsync(ct);
                     using var reader = new StreamReader(stream);
                     await foreach (var frame in ReadSseAsync(reader, ct))
@@ -138,6 +192,7 @@ public sealed class HubClient(HttpClient http, ILogger<HubClient> logger)
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
+                    opened?.TrySetCanceled(ct);
                     return;
                 }
                 catch (HttpRequestException ex)
@@ -151,6 +206,7 @@ public sealed class HubClient(HttpClient http, ILogger<HubClient> logger)
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "hub SSE {Path} failed", path);
+                    opened?.TrySetException(ex);
                     stop = true;
                 }
 
@@ -161,6 +217,7 @@ public sealed class HubClient(HttpClient http, ILogger<HubClient> logger)
         }
         finally
         {
+            opened?.TrySetCanceled(ct);
             writer.TryComplete();
         }
     }
@@ -211,6 +268,14 @@ public sealed class HubClient(HttpClient http, ILogger<HubClient> logger)
 public sealed record HubChange(
     [property: JsonPropertyName("queueId")] long QueueId,
     [property: JsonPropertyName("topic")] string Topic,
-    [property: JsonPropertyName("entityId")] Guid? EntityId);
+    [property: JsonPropertyName("entityId")] Guid? EntityId)
+{
+    /// <summary>
+    /// WatchLive: Hub has subscribed. Not a <c>hub_queue</c> row.
+    /// </summary>
+    public static HubChange Live { get; } = new(0, "live", null);
+
+    public bool IsLiveOpen => QueueId == 0 && Topic == "live";
+}
 
 

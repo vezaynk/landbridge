@@ -410,12 +410,12 @@ public sealed class LeadTools(
         CancellationToken ct = default,
         [Description("Optional: these sessions' outstanding items, with bodies.")] string[]? sessionIds = null)
     {
-        if (inbox is null)
-            throw new McpException("the inbox feed is not available in this process.");
         var lead = await LeadOn(teamId, ct);
         var filter = await SessionFilterAsync(sessionId, sessionIds, ct);
         var actor = filter is { Count: > 0 } ? lead : (Actor?)null;
-        await foreach (var snapshot in LeadInboxWatch.Snapshots(store, inbox, lead.Team, filter, actor, ct))
+        var hub = http.HttpContext?.RequestServices?.GetService<HubClient>();
+        await foreach (var snapshot in InboxWatch.Lead(
+            store, hub, InboundBearer, inbox, lead.Team, teamId, filter, actor, ct))
         {
             if (snapshot.Items.Count > 0)
                 return snapshot;

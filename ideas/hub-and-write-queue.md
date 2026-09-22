@@ -39,7 +39,7 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 | Socket | `RunnerConnectionRegistry` | send delegate, tracked dispatches, generation. Facts are the columns. Test machines enroll a real `machines.id` |
 
 | Dispatch / inbox wake | `SessionEventListener` / `SessionEventFanout` | LISTEN `landbridge_session_events` only |
-| Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | full **snapshot** on wake, still in Core ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
+| Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | snapshot on Hub SSE wake; mark-read still a write ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
 | Dashboard live read | Hub membership SSE → GET twins | circuit holds `/sessions/events` etc.; 2s poll is gone |
 | Hub | `Landbridge.Hub` `:5300` loopback | LISTEN, tail `hub_queue`, JSON twins, Bearer. Retention `DELETE` older than `Hub:Retain` (24h) |
 | Runner channel | `/runner` WebSocket | frozen §10; unchanged |
@@ -263,7 +263,7 @@ Dashboard is its own process, a Hub client like LeadMCP/WorkerMCP. The browser t
 3c. **LeadMCP + WorkerMCP + Dashboard** — three Hub clients. Core keeps `/runner`, dispatch, `Apply`. (Credential issuance left ahead of them — the OAuth AS and the machine bootstrap, both in `Landbridge.Auth`.)
 4. Hub session list/document fields those hosts need (occupancy-complete membership, remaining last-value columns, worker-scoped processes). Dashboard composes the board; Hub does not serve `GetObservabilityAsync`.
 5. Dashboard process: Blazor circuit EventSource → Hub (server-side Bearer). Cookie POSTs → Core.
-6. Inbox **watch** on the MCP hosts via Hub SSE + GET. Mark-read / `PullReceipt` stay writes.
+6. Inbox **watch** on the MCP hosts via Hub SSE + GET — done. Mark-read / `PullReceipt` stay writes. Fanout remains the test-host path when Hub is unset.
 7. Part 2: MCP hosts stop calling `Apply`; accept queue on Core.
 
 
@@ -310,7 +310,8 @@ Each PR's base is the previous branch.
 5. **Dashboard origin** — browser hits Dashboard; Core no longer maps `/dashboard`. Cookie POSTs and fleet-board circuit mutations POST to Core when `Landbridge:CoreUrl` is set.
 6. **Façade reads** — LeadMCP `list_profiles` / `get_team_state` / team-wide inbox identifiers, WorkerMCP `list_processes`, and the Dashboard board package Hub nouns (store fallback when Hub is unset). Per-session inbox fetch still writes. Event-log marks/tail and `LastProgress` are omitted on the Hub path.
 7. **Core writes** — `POST /core/v1/*` is sync Apply on Core (registry sends included). Façades forward Bearer when `Landbridge:CoreUrl` is set. Not the 202 queue yet.
-8. **Core** is `/runner` + dispatch + `Apply` + `/core/v1` + `/relay/validate` + `/preview/connect`.
+8. **Inbox watch** — `watch_lead_inbox` / `watch_inbox` / `GET /lead/inbox/events` wake on Hub SSE, then GET. Mark-read / `PullReceipt` stay writes. Fanout when Hub is unset.
+9. **Core** is `/runner` + dispatch + `Apply` + `/core/v1` + `/relay/validate` + `/preview/connect`.
 
 Do not stand up two hosts that each run dispatch. Dashboard must not `Apply`.
 

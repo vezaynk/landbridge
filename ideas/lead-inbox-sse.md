@@ -5,7 +5,7 @@
 **Status:** Implemented
 **Depends on:** occupancy and the message machine ([`spec.md`](spec.md) §6).
 
-The Lead inbox is a snapshot of outstanding items. HTTP SSE and `watch_lead_inbox` wake on session NOTIFY. Postgres LISTEN/NOTIFY is the bus. The human dashboard's 5s poll is a separate surface.
+The Lead inbox is a snapshot of outstanding items. HTTP SSE and `watch_lead_inbox` wake on Hub `event: change` (`/sessions/events`) when `Landbridge:HubUrl` is set, then GET the snapshot. Tests without Hub still wake on `SessionEventFanout`. Per-session fetch that marks report mail read is a store write. Worker `watch_inbox` is the same doorbell on `/sessions/{id}/events`; `PullReceipt` stays a write.
 
 ## Surface
 
@@ -48,4 +48,4 @@ MCP Tasks `notifications/tasks/status` is not wired. Envelope status is `tasks/g
 
 ## Bus
 
-`SessionEventListener` is one-consumer; dispatch owns that instance. `SessionEventFanout` is a second LISTEN connection that broadcasts wakes to inbox subscribers, so snapshots cannot stall dispatch.
+`SessionEventListener` is one-consumer; dispatch owns that instance. Hub is the production doorbell (`WatchLiveAsync` skips `hub_queue` catch-up; the snapshot GET is complete). `SessionEventFanout` remains for hosts with Hub unset so snapshots cannot stall dispatch in tests.

@@ -85,26 +85,16 @@ public sealed class WorkerTools(
                  "report when you are waiting for a follow-up.")]
     public async Task<WorkerInboxView> WatchInbox(CancellationToken ct)
     {
-        if (inbox is null)
-            throw new McpException("the inbox feed is not available in this process.");
         var caller = Caller;
-        using var sub = inbox.Subscribe(caller.Session.Value);
-        var snap = await store.GetWorkerInboxAsync(caller, ct)
-            ?? throw new McpException(
-                "no assignment for this credential: the session is gone, or you are no longer its " +
-                "incumbent worker (it was parked, failed, or handed to a successor).");
-        if (snap.Items.Count > 0)
-            return snap;
-        await foreach (var _ in sub.Reader.ReadAllAsync(ct))
+        var hub = http.HttpContext?.RequestServices?.GetService<HubClient>();
+        await foreach (var snap in InboxWatch.Worker(store, hub, InboundBearer, inbox, caller, ct))
         {
-            snap = await store.GetWorkerInboxAsync(caller, ct)
-                ?? throw new McpException(
-                    "no assignment for this credential: the session is gone, or you are no longer its " +
-                    "incumbent worker (it was parked, failed, or handed to a successor).");
             if (snap.Items.Count > 0)
                 return snap;
         }
-        return snap;
+        throw new McpException(
+            "no assignment for this credential: the session is gone, or you are no longer its " +
+            "incumbent worker (it was parked, failed, or handed to a successor).");
     }
 
     [McpServerTool(Name = "report_result"),
