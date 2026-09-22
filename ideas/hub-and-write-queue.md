@@ -40,7 +40,7 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 
 | Dispatch / inbox wake | `SessionEventListener` / `SessionEventFanout` | LISTEN `landbridge_session_events` only |
 | Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | full **snapshot** on wake, still in Core ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
-| Dashboard live read | Blazor `DashboardRefresh` | **still 2s poll**. Hub has no consumer yet |
+| Dashboard live read | Hub membership SSE → GET twins | circuit holds `/sessions/events` etc.; 2s poll is gone |
 | Hub | `Landbridge.Hub` `:5300` loopback | LISTEN, tail `hub_queue`, JSON twins, Bearer. Retention `DELETE` older than `Hub:Retain` (24h) |
 | Runner channel | `/runner` WebSocket | frozen §10; unchanged |
 
@@ -86,7 +86,7 @@ v1 of the MCP hosts may still `Apply` in-process against the same Postgres (toda
 
 ## Problem
 
-1. The §12 board polls every 2s.
+1. The §12 board used to poll every 2s; it now refetches on Hub SSE.
 2. Lead inbox SSE already does wake + snapshot but **in Core**, so those sockets die with Core.
 3. A dashboard that is only `EventSource` + `GET` should survive Core death: pings keep flowing, committed rows are still readable. That requires the Blazor circuit **not** to live in Core — Dashboard is its own process.
 
@@ -250,7 +250,7 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 Dashboard is its own process, a Hub client like LeadMCP/WorkerMCP. The browser talks to Dashboard (cookie). Dashboard talks to Hub (Bearer copied from the cookie). Hub stays loopback.
 
 - Live (target): Dashboard holds EventSource per membership list + per visible row against Hub. Core death does not drop the circuit.
-- Live: Dashboard circuit subscribes to Hub membership SSE (`event: change`) and refetches JSON twins. 2s poll remains when Hub is unset.
+- Live: Dashboard circuit subscribes to Hub membership SSE (`event: change`) and refetches JSON twins. No timer.
 - At-rest / click: Dashboard `GET`s Hub JSON twins. Cookie POSTs (revoke, preview, permission) go to Core.
 - Core 502 during restart: retry mutation; **do not** tear down Hub SSE. Committed session state did not change. Machine rail follows `last_spoke_at`.
 

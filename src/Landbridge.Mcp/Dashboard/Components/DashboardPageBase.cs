@@ -11,11 +11,10 @@ namespace Landbridge.Mcp.Dashboard.Components;
 /// <summary>
 /// Shared load + refresh + principal resolution for gated dashboard pages.
 /// Prerender paints a complete HTML document (tests and no-JS); a live circuit
-/// then refetches on Hub SSE <c>event: change</c>, or every 2s when Hub is unset.
+/// refetches on Hub SSE <c>event: change</c>. No timer.
 /// </summary>
 public abstract class DashboardPageBase : ComponentBase, IDisposable
 {
-    private readonly DashboardRefresh _refresh = new();
     private readonly DashboardHubWake _wake = new();
     private readonly CancellationTokenSource _lifetime = new();
     private int _reloading;
@@ -89,8 +88,6 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
             return;
         if (Hub is { Enabled: true } && _token is { Length: > 0 } token)
             _wake.Start(Hub, token, () => InvokeAsync(ReloadAsync), RequestAborted);
-        else
-            _refresh.Start(() => InvokeAsync(ReloadAsync));
     }
 
     protected async Task ReloadAsync()
@@ -227,7 +224,6 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
             Nav.LocationChanged -= OnLocationChanged;
             _listening = false;
         }
-        _refresh.Dispose();
         _wake.Dispose();
         _lifetime.Cancel();
         _lifetime.Dispose();

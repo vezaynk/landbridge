@@ -12,7 +12,7 @@ namespace Landbridge.Mcp.Dashboard;
 /// without a navigation — the page reloads its snapshot in place.
 ///
 /// Each call opens its own DI scope. The circuit's scoped
-/// <see cref="LandbridgeDbContext"/> is already in use by the 2s refresh, and
+/// <see cref="LandbridgeDbContext"/> is already in use by the Hub refetch, and
 /// Npgsql refuses a second command on that connection.
 /// </summary>
 public sealed class FleetBoardMutations(IServiceScopeFactory scopes, IConfiguration config)

@@ -2,7 +2,7 @@ namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// Circuit-side Hub membership SSE. A <c>change</c> on any collection stream
-/// arms one coalesced refetch. Hub unset keeps <see cref="DashboardRefresh"/>.
+/// arms one coalesced refetch. Hub unset means a static page until navigation.
 /// </summary>
 internal sealed class DashboardHubWake : IDisposable
 {
