@@ -48,6 +48,8 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
     /// </summary>
     protected CancellationToken RequestAborted => _lifetime.Token;
 
+    protected string? OperatorToken => _token;
+
     /// <summary>Passthrough GET to the internal hub. Null when Hub is unset or down.</summary>
     protected Task<T?> HubGetAsync<T>(string path) =>
         Hub is { Enabled: true } && _token is { Length: > 0 } token

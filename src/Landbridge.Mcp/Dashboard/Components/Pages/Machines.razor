@@ -38,13 +38,18 @@ else if (Ready && Snapshot is { } snap)
             return "the machine group is a human-operator view; a Lead session sees its owned Teams "
                 + "on /dashboard/teams and through get_team_state";
         }
-        Teams = await Queries.GetTeamsAsync(teamScope: null, RequestAborted);
+        var token = OperatorToken ?? "";
+        Teams = await DashboardHubBoard.TryTeamsAsync(Hub, token, null, RequestAborted)
+            ?? await Queries.GetTeamsAsync(teamScope: null, RequestAborted);
         SelectedTeamId = await ResolveTeamAsync(Teams);
         Binding = Principal is Principal.Human h
-            ? await Queries.GetHumanBindingAsync(h.HumanId, RequestAborted)
+            ? await DashboardHubBoard.TryBindingAsync(Hub, token, h.HumanId, RequestAborted)
+                ?? await Queries.GetHumanBindingAsync(h.HumanId, RequestAborted)
             : null;
-        Snapshot = await Queries.GetObservabilityAsync(
-            Now, WindowDuration, teamScope: null, RequestAborted, teamId: SelectedTeamId);
+        Snapshot = await DashboardHubBoard.TrySnapshotAsync(
+                Hub, token, Now, WindowDuration, null, SelectedTeamId, RequestAborted)
+            ?? await Queries.GetObservabilityAsync(
+                Now, WindowDuration, teamScope: null, RequestAborted, teamId: SelectedTeamId);
         return null;
     }
 

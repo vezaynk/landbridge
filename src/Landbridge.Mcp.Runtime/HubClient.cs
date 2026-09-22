@@ -69,14 +69,4 @@ public sealed class HubClient(HttpClient http, ILogger<HubClient> logger)
     }
 }
 
-/// <summary>Wire twin of the hub machine document. Routing fields only.</summary>
-public sealed record HubMachine(
-    Guid Id,
-    string Slug,
-    string Name,
-    string Os,
-    bool Ready,
-    bool UnderBackPressure,
-    bool Live,
-    DateTimeOffset? LastSpokeAt,
-    string[] Profiles);
+

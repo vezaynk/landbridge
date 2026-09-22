@@ -1,6 +1,7 @@
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -22,6 +23,8 @@ internal static class DashboardJsonReads
 
         var tokens = http.RequestServices.GetRequiredService<TokenService>();
         var queries = http.RequestServices.GetRequiredService<DashboardQueries>();
+        var hub = http.RequestServices.GetService<HubClient>();
+        var bearer = DashboardAuth.ReadToken(http) ?? "";
         var ct = http.RequestAborted;
 
         if (string.Equals(path, "/dashboard/connect", StringComparison.OrdinalIgnoreCase))
@@ -108,14 +111,18 @@ internal static class DashboardJsonReads
                     + "on /dashboard/teams and through get_team_state");
                 return true;
             }
-            var machines = await queries.GetMachinesAsync(ct);
+            var machines = hub is not null
+                ? await DashboardHubBoard.TryMachinesAsync(hub, bearer, ct) ?? await queries.GetMachinesAsync(ct)
+                : await queries.GetMachinesAsync(ct);
             await http.Response.WriteAsJsonAsync(machines, DashboardNegotiate.Json, ct);
             return true;
         }
 
         if (string.Equals(path, "/dashboard/teams", StringComparison.OrdinalIgnoreCase))
         {
-            var teams = await queries.GetTeamsAsync(teamScope, ct);
+            var teams = hub is not null
+                ? await DashboardHubBoard.TryTeamsAsync(hub, bearer, teamScope, ct) ?? await queries.GetTeamsAsync(teamScope, ct)
+                : await queries.GetTeamsAsync(teamScope, ct);
             await http.Response.WriteAsJsonAsync(teams, DashboardNegotiate.Json, ct);
             return true;
         }
