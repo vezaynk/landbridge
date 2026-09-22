@@ -147,6 +147,7 @@ app.Use(async (ctx, next) =>
 // The control plane ↔ runner WebSocket (machine-only, §10).
 // MCP is LeadMCP / WorkerMCP. The board is Dashboard.
 app.MapRunnerEndpoint();
+app.MapCoreWrites();
 
 // The relay grant-validation endpoint (§8.3): plain HTTP, shared-bearer auth,
 // fail-closed. The relay asks whether a presented grant is valid for a tunnel;

@@ -125,6 +125,9 @@ public sealed class WorkerTools(
         CancellationToken ct = default)
     {
         var caller = Caller;
+        if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/report",
+                new CoreSessionBody("", ResultReference: resultReference, Report: report), ct) is { } viaCore)
+            return viaCore.Describe();
         return Describe(await store.ApplyAsync(caller.Session, new ReportResult(caller, resultReference, report), ct));
     }
 
@@ -152,6 +155,9 @@ public sealed class WorkerTools(
                 $"unknown input kind '{kind}'; expected one of: {string.Join(", ", Enum.GetNames<InputRequestKind>())}");
 
         var caller = Caller;
+        if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/ask",
+                new CoreSessionBody("", Kind: kind, Text: question), ct) is { } viaCore)
+            return viaCore.Describe();
         return Describe(await store.ApplyAsync(caller.Session, new RequestInput(caller, parsed, question), ct));
     }
 
@@ -192,6 +198,26 @@ public sealed class WorkerTools(
         CancellationToken ct = default)
     {
         var caller = Caller;
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreProcessStartReply>("/core/v1/processes/start", bearer,
+                new CoreProcessStartBody(name, spawn, workingDirectory, env, openStdin), ct);
+            if (via is not null)
+            {
+                if (!via.Started)
+                    return new StartProcessResult(false, null, via.Refusal, null);
+                var hint =
+                    "Landbridge does not track this process's port. If other sessions need to reach it, call " +
+                    "register_service with the name and the port it bound. Read its output at the log " +
+                    $"path, and stop it with stop_process when the work is done — nothing stops it for you." +
+                    (openStdin
+                        ? " Stdin is open, so you can write_process to it and stop_process can stop it gracefully."
+                        : " Started without stdin (the default): write_process will refuse, and stopping it is a hard stop. Restart it with openStdin true if you need to talk to it.");
+                return new StartProcessResult(true, via.LogPath, null, hint);
+            }
+        }
+
         var result = await processes.StartAsync(
             caller.Session, name, spawn, workingDirectory, env, openStdin, ct);
 
@@ -222,6 +248,14 @@ public sealed class WorkerTools(
         [Description("The name the process was started with.")] string name,
         CancellationToken ct = default)
     {
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreProcessActionReply>("/core/v1/processes/stop", bearer,
+                new CoreProcessBody(name), ct);
+            if (via is not null)
+                return new ProcessActionResult(via.Ok, via.Refusal, via.Value);
+        }
         var r = await processes.StopAsync(Caller.Session, name, ct);
         return new ProcessActionResult(r.Ok, r.Refusal, r.Value);
     }
@@ -267,6 +301,14 @@ public sealed class WorkerTools(
         }
     }
 
+    private async Task<CoreStoreReply?> CorePostAsync<T>(string path, T body, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is not { Enabled: true } core
+            || InboundBearer is not { Length: > 0 } bearer)
+            return null;
+        return await core.PostAsync(path, bearer, body, ct);
+    }
+
 
     [McpServerTool(Name = "write_process"),
      Description("Write text to a background process's stdin — a command for a REPL, an answer a tool is " +
@@ -284,6 +326,14 @@ public sealed class WorkerTools(
         bool appendNewline = true,
         CancellationToken ct = default)
     {
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreProcessActionReply>("/core/v1/processes/write", bearer,
+                new CoreProcessBody(name, data, appendNewline), ct);
+            if (via is not null)
+                return new ProcessActionResult(via.Ok, via.Refusal, via.Value);
+        }
         var r = await processes.WriteAsync(Caller.Session, name, data, appendNewline, ct);
         return new ProcessActionResult(r.Ok, r.Refusal, r.Value);
     }
@@ -300,6 +350,9 @@ public sealed class WorkerTools(
         CancellationToken ct)
     {
         var caller = Caller;
+        if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/services",
+                new CoreSessionBody("", Name: name, Port: port), ct) is { } viaCore)
+            return viaCore.Describe();
         return Describe(await store.RegisterServiceAsync(caller, name, port, ct));
     }
 

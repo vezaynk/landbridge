@@ -309,7 +309,8 @@ Each PR's base is the previous branch.
 4. **Cutover** — `PublicMcpUrl` is LeadMCP, `WorkerMcpUrl` is WorkerMCP. Core no longer maps MCP tools or the lead inbox. Enroll is Auth.
 5. **Dashboard origin** — browser hits Dashboard; Core no longer maps `/dashboard`. Cookie POSTs still `Apply` in Dashboard until Part 2.
 6. **Façade reads** — LeadMCP `list_profiles` / `get_team_state` / team-wide inbox identifiers, WorkerMCP `list_processes`, and the Dashboard board package Hub nouns (store fallback when Hub is unset). Per-session inbox fetch still writes. Event-log marks/tail and `LastProgress` are omitted on the Hub path.
-7. **Core** is `/runner` + dispatch + `Apply` + mutation HTTP (`/relay/validate`, `/preview/connect`).
+7. **Core writes** — `POST /core/v1/*` is sync Apply on Core (registry sends included). Façades forward Bearer when `Landbridge:CoreUrl` is set. Not the 202 queue yet.
+8. **Core** is `/runner` + dispatch + `Apply` + `/core/v1` + `/relay/validate` + `/preview/connect`.
 
 Do not stand up two hosts that each run dispatch. Dashboard must not `Apply`.
 

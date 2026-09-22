@@ -1,8 +1,10 @@
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Dashboard.Components.Pages;
 using Landbridge.Web;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using static Landbridge.Mcp.Dashboard.DashboardHosting;
 
 namespace Landbridge.Mcp.Dashboard;
@@ -319,6 +321,24 @@ public static class DashboardEndpoints
 
         var message = form["message"].ToString();
         var id = new Landbridge.Core.SessionId(sessionId);
+        var core = http.RequestServices.GetService<CoreWriteClient>();
+        var bearer = DashboardAuth.ReadToken(http);
+        if (core is { Enabled: true } && !string.IsNullOrEmpty(bearer))
+        {
+            var reply = await core.PostAsync($"/core/v1/sessions/{sessionId:D}/permission", bearer,
+                new CoreSessionBody("", Option: option.Trim(), Message: string.IsNullOrWhiteSpace(message) ? null : message), ct);
+            if (reply.Status != "applied")
+            {
+                var reason = reply.Reason ?? reply.Status;
+                return DashboardNegotiate.WantsJson(http)
+                    ? Results.Json(new { error = reason }, Json, statusCode: StatusCodes.Status409Conflict)
+                    : RazorPage<PermissionRefusedPage>(new { Reason = reason }, StatusCodes.Status409Conflict);
+            }
+            var decidedCore = await store.GetPermissionRequestAsync(id, ct);
+            return decidedCore is null
+                ? Results.NotFound(new { error = "task disappeared" })
+                : Negotiated(http, decidedCore, () => RazorPage<PermissionDecidedPage>(new { Request = decidedCore }));
+        }
         var result = await store.AnswerPermissionAsync(
             new Landbridge.Core.HumanSession(), id, option.Trim(),
             string.IsNullOrWhiteSpace(message) ? null : message, ct);

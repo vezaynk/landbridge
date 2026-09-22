@@ -228,6 +228,7 @@ builder.AddProject<Projects.Landbridge_LeadMcp>("lead-mcp", options => options.E
     .WithEnvironment("ASPNETCORE_URLS", leadMcpListenUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__HubUrl", hubUrl)
+    .WithEnvironment("Landbridge__CoreUrl", mcpUrl)
     .WithEnvironment("Landbridge__PublicMcpUrl", publicMcpUrl)
     .WithEnvironment("Landbridge__AuthUrl", authUrl)
     .WithHttpHealthCheck("/health");
@@ -240,6 +241,7 @@ builder.AddProject<Projects.Landbridge_WorkerMcp>("worker-mcp", options => optio
     .WithEnvironment("ASPNETCORE_URLS", workerMcpListenUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__HubUrl", hubUrl)
+    .WithEnvironment("Landbridge__CoreUrl", mcpUrl)
     .WithEnvironment("Landbridge__PublicMcpUrl", publicMcpUrl)
     .WithEnvironment("Landbridge__AuthUrl", authUrl)
     .WithEnvironment("Landbridge__Classifier__Url", "http://127.0.0.1:" + classifierPort)
@@ -253,6 +255,7 @@ var dashboard = builder.AddProject<Projects.Landbridge_Dashboard>("dashboard", o
     .WithEnvironment("ASPNETCORE_URLS", dashboardUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__HubUrl", hubUrl)
+    .WithEnvironment("Landbridge__CoreUrl", mcpUrl)
     .WithEnvironment("Landbridge__PublicMcpUrl", publicMcpUrl)
     .WithEnvironment("Landbridge__AuthUrl", authUrl)
     .WithEnvironment("Landbridge__Operator__PassphraseHash",

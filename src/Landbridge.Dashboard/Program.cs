@@ -5,6 +5,7 @@ using Landbridge.Mcp.Dashboard;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.AddPlane();
+builder.Services.AddLandbridgeCoreWrite();
 builder.Services.AddDashboard();
 builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
 builder.Services.AddSingleton<PreviewAuthStore>();

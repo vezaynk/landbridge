@@ -78,6 +78,14 @@ public sealed class LeadTools(
         return await hub.GetAsync<T>(path, bearer, ct);
     }
 
+    private async Task<CoreStoreReply?> CorePostAsync<T>(string path, T body, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is not { Enabled: true } core
+            || InboundBearer is not { Length: > 0 } bearer)
+            return null;
+        return await core.PostAsync(path, bearer, body, ct);
+    }
+
     private Principal.Lead LeadPrincipal
     {
         get
@@ -124,6 +132,8 @@ public sealed class LeadTools(
                  "token from sharing a Team. There is no list of Teams.")]
     public async Task<string> CreateTeam(CancellationToken ct = default)
     {
+        if (await CorePostAsync("/core/v1/create-team", new { }, ct) is { } viaCore)
+            return viaCore.Slug ?? viaCore.Describe();
         var team = await tokens.CreateTeamAsync(LeadPrincipal.CredentialId, ct);
         return await ids.TeamAsync(team.Value, ct);
     }
@@ -151,6 +161,9 @@ public sealed class LeadTools(
             throw new McpException("profile is required; call list_profiles and pass an exact name.");
 
         var lead = await LeadOn(teamId, ct);
+        if (await CorePostAsync("/core/v1/create-session",
+                new CoreCreateSessionBody(teamId, description, profile.Trim()), ct) is { } viaCore)
+            return viaCore.Slug ?? viaCore.Describe();
         var result = await store.CreateAsync(
             new CreateSession(lead, lead.Team, description, profile.Trim()), ct);
 
@@ -182,6 +195,9 @@ public sealed class LeadTools(
         var ttl = ResolveStopTtl(ttlSeconds);
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/stop",
+                new CoreSessionBody(teamId, TtlSeconds: ttlSeconds), ct) is { } viaCore)
+            return viaCore.Describe();
         var machine = registry.MachineFor(id);
         var applied = await store.ApplyAsync(id, new Landbridge.Core.StopSession(lead), ct);
         if (applied is StoreResult.Applied ok
@@ -218,6 +234,11 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/park",
+                new CoreSessionBody(teamId), ct) is { } viaCore)
+            return viaCore.Status == "applied"
+                ? viaCore.Describe()
+                : viaCore.Reason ?? "this task is not tracked on any machine, so it cannot be parked";
         var machine = registry.MachineFor(id);
         // Park records where the task ran. Without a tracked machine there is nothing
         // truthful to write, so the park is refused rather than recorded against a
@@ -256,6 +277,9 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/input-response",
+                new CoreSessionBody(teamId, Answer: answer), ct) is { } viaCore)
+            return viaCore.Describe();
         var machine = registry.MachineFor(id);
         var live = registry.HasLiveProcess(id);
         var result = await store.SendInputResponseAsync(lead, id, machine, answer, live, ct);
@@ -282,6 +306,9 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/input-request",
+                new CoreSessionBody(teamId, Text: text), ct) is { } viaCore)
+            return viaCore.Describe();
         var machine = registry.MachineFor(id);
         var live = registry.HasLiveProcess(id);
         var result = await store.SendInputRequestAsync(lead, id, machine, text, live, ct);
@@ -337,6 +364,9 @@ public sealed class LeadTools(
         // holding its own tool call open, so there is nothing to redispatch and no transcript
         // to resume (§11). Escalation is enforced on the row inside the store, so a Lead
         // answering one it already handed over is refused there rather than here.
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/permission",
+                new CoreSessionBody(teamId, Option: option.Trim(), Message: message), ct) is { } viaCore)
+            return viaCore.Describe();
         return Describe(await store.AnswerPermissionAsync(lead, id, option.Trim(), message, ct));
     }
 
@@ -483,6 +513,9 @@ public sealed class LeadTools(
         var id = await ids.TryMachineAsync(machineId, ct)
             ?? throw new McpException($"'{machineId}' is not a valid machine id.");
 
+        if (await CorePostAsync("/core/v1/bind-machine", new CoreBindBody(machineId), ct) is { } viaCore)
+            return viaCore.Describe();
+
         return await bindings.BindAsync(human, id, ct) switch
         {
             LeadMachineBindResult.Bound b =>
@@ -504,6 +537,8 @@ public sealed class LeadTools(
         CancellationToken ct)
     {
         _ = await LeadOn(teamId, ct);
+        if (await CorePostAsync("/core/v1/unbind-machine", new { }, ct) is { } viaCore)
+            return viaCore.Describe();
         var released = await bindings.UnbindAsync(HumanOf(LeadPrincipal), ct);
         return released is null
             ? "ok: you had no machine bound; nothing to release."

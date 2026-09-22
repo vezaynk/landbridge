@@ -94,4 +94,15 @@ public static class PlaneHost
         });
         return services;
     }
+
+    public static IServiceCollection AddLandbridgeCoreWrite(this IServiceCollection services)
+    {
+        services.AddHttpClient<CoreWriteClient>((sp, client) =>
+        {
+            var url = sp.GetRequiredService<IConfiguration>()["Landbridge:CoreUrl"];
+            if (!string.IsNullOrWhiteSpace(url))
+                client.BaseAddress = new Uri(url.TrimEnd('/') + "/");
+        });
+        return services;
+    }
 }

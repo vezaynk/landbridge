@@ -5,6 +5,7 @@ using Landbridge.Mcp.Tools;
 var builder = WebApplication.CreateBuilder(args);
 builder.AddPlane();
 builder.Services.AddLandbridgeHubClient();
+builder.Services.AddLandbridgeCoreWrite();
 
 builder.Services.AddMcpServer()
     .WithHttpTransport()
