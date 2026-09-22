@@ -306,7 +306,7 @@ jobs:
 
       - name: Install opencode CLI
         if: matrix.harness == 'opencode'
-        run: npm install -g opencode-ai@1.18.31
+        run: npm install -g opencode-ai@1.18.32
 
       - name: Install grok CLI
         if: matrix.harness == 'grok'
