@@ -82,7 +82,7 @@ Two dashboards:
 - The **Aspire dashboard** (URL printed on the console) shows every resource,
   its logs, and the host's OpenTelemetry traces/metrics.
 - The **Landbridge web dashboard** (spec §12) is served by the host at
-  `http://127.0.0.1:5050/dashboard` — Machine Group, Team, inbox, and event-log
+  `http://127.0.0.1:5080/dashboard` — Machine Group, Team, inbox, and event-log
   views. The Aspire / Development host uses the passphrase `dev`; production
   needs `Landbridge:Operator:PassphraseHash` (see `docs/RUNNING.md`).
 

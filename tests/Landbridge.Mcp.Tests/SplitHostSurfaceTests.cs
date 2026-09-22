@@ -120,6 +120,9 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
             "/", new StringContent("{}", System.Text.Encoding.UTF8, "application/json"), cts.Token);
         Assert.NotEqual(HttpStatusCode.OK, resp.StatusCode);
         Assert.DoesNotContain("mcp", resp.Content.Headers.ContentType?.MediaType ?? "");
+
+        using var dash = await client.GetAsync("/dashboard", cts.Token);
+        Assert.Equal(HttpStatusCode.NotFound, dash.StatusCode);
     }
 
     private async Task<IReadOnlyList<string>> ToolNamesAsync(string which, CancellationToken ct)

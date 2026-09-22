@@ -14,6 +14,18 @@ app.MapDefaultEndpoints();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAntiforgery();
+app.Use(async (ctx, next) =>
+{
+    if (HttpMethods.IsGet(ctx.Request.Method)
+        && ctx.Request.Path == "/"
+        && (ctx.Request.Headers.Accept.ToString().Contains("text/html", StringComparison.OrdinalIgnoreCase)
+            || string.IsNullOrEmpty(ctx.Request.Headers.Accept)))
+    {
+        ctx.Response.Redirect("/dashboard");
+        return;
+    }
+    await next();
+});
 app.MapDashboard();
 app.MapDashboardTranscripts();
 // §5: this host is a resource server, so it serves the document its own 401

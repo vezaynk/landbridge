@@ -59,7 +59,7 @@ internal static class ConnectEndpoints
             protectedResource = oauth?.ResourceMetadataUri ?? $"{mcpUrl}/.well-known/oauth-protected-resource",
             authorizationServer = oauth?.AuthorizationServerMetadataUri
                 ?? $"{issuer}/.well-known/oauth-authorization-server",
-            enroll = $"{plane}/enroll",
+            enroll = $"{issuer}/enroll",
             enrollmentTtlMinutes = (int)TokenService.EnrollmentTtl.TotalMinutes,
             leadSkill = "landbridge://skills/lead",
             enrollSkill = "landbridge://skills/enroll",

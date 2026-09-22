@@ -307,8 +307,8 @@ Each PR's base is the previous branch.
 2. **Hub read shapes** those hosts need + `live` = last-spoke only + `HubClient` 5xx → null. Revert fused `list_profiles` off Hub until LeadMCP exists (or filter to `live`).
 3. **LeadMCP / WorkerMCP hosts** — done.
 4. **Cutover** — `PublicMcpUrl` is LeadMCP, `WorkerMcpUrl` is WorkerMCP. Core no longer maps MCP tools or the lead inbox. Enroll is Auth.
-5. **Dashboard origin** — browser hits Dashboard; Core no longer maps `/dashboard`.
-6. **Strip leftover Core UI.** Core is `/runner` + dispatch + `Apply` + mutation HTTP.
+5. **Dashboard origin** — browser hits Dashboard; Core no longer maps `/dashboard`. Cookie POSTs still `Apply` in Dashboard until Part 2.
+6. **Core** is `/runner` + dispatch + `Apply` + mutation HTTP (`/relay/validate`, `/preview/connect`).
 
 Do not stand up two hosts that each run dispatch. Dashboard must not `Apply`.
 

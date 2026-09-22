@@ -2,7 +2,6 @@ using System.Text.Json.Nodes;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Mcp;
-using Landbridge.Mcp.Dashboard;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry;
 using OpenTelemetry.Trace;
@@ -20,14 +19,6 @@ builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing.AddSource(DispatchService.ActivitySourceName));
 builder.Services.AddScoped<PreviewConnectService>();
 builder.Services.AddSingleton<PreviewAuthStore>();
-builder.Services.AddScoped<OAuthAuthorizationCodeService>();
-builder.Services.AddDashboard();
-
-// The operator verifier caches the configured passphrase hash. The authorization
-// server is its own host now (Landbridge.Auth), but this one still needs the
-// verifier: the dashboard's own login (§12) checks the same passphrase without
-// going through OAuth at all.
-builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
 
 // §13: WorkerMcpUrl is WorkerMCP. Dispatch stamps it onto mcpServers / {mcp_url}.
 // PublicMcpUrl is LeadMCP (OAuth audience). Unset, they share the default.
@@ -134,36 +125,28 @@ app.MapDefaultEndpoints();
 app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
-// Blazor Server needs this between auth and Map*. Sitting it here — not inside
-// MapDashboard after MapRunnerEndpoint — keeps the /runner upgrade on the same
-// pipeline the rest of the host uses.
-app.UseAntiforgery();
 
-// A browser opening the plane URL is a GET / with Accept: text/html. Bounce
-// to the dashboard on this host until Dashboard is the only UI origin.
+// A browser opening the plane URL is a GET / with Accept: text/html. The UI
+// is Landbridge.Dashboard, not this host.
 app.Use(async (ctx, next) =>
 {
     if (HttpMethods.IsGet(ctx.Request.Method)
         && ctx.Request.Path == "/"
         && AcceptsHtml(ctx.Request.Headers.Accept.ToString()))
     {
-        ctx.Response.Redirect("/dashboard");
+        var dashboard = ctx.RequestServices.GetRequiredService<IConfiguration>()["Landbridge:DashboardUrl"]
+            ?? Environment.GetEnvironmentVariable("LANDBRIDGE_DASHBOARD_URL");
+        ctx.Response.Redirect(string.IsNullOrWhiteSpace(dashboard)
+            ? "/dashboard"
+            : $"{dashboard.TrimEnd('/')}/dashboard");
         return;
     }
     await next();
 });
 
 // The control plane ↔ runner WebSocket (machine-only, §10).
-// MCP is LeadMCP / WorkerMCP, not this host.
+// MCP is LeadMCP / WorkerMCP. The board is Dashboard.
 app.MapRunnerEndpoint();
-
-// The §12 web dashboard — the primary human surface (Machine Group, Team view,
-// Human inbox, event log), Blazor Server with a JSON twin. Gated by its own
-// bearer-or-cookie resolution (DashboardAuth), not RequireAuthorization, so the
-// browser path never trips the MCP challenge.
-app.MapDashboard();
-// §12 transcript serving: its own file and its own auth rule (human operator only).
-app.MapDashboardTranscripts();
 
 // The relay grant-validation endpoint (§8.3): plain HTTP, shared-bearer auth,
 // fail-closed. The relay asks whether a presented grant is valid for a tunnel;

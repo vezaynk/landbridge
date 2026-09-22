@@ -170,6 +170,7 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     // PublicMcpUrl is LeadMCP — the OAuth audience and the URL Connect shows.
     .WithEnvironment("Landbridge__PublicMcpUrl", publicMcpUrl)
     .WithEnvironment("Landbridge__WorkerMcpUrl", workerMcpUrl)
+    .WithEnvironment("Landbridge__DashboardUrl", dashboardUrl)
     // §5: the authorization server is its own host. This is what the plane's
     // protected-resource document names and its 401 challenge sends a client to.
     .WithEnvironment("Landbridge__AuthUrl", authUrl)
@@ -244,7 +245,7 @@ builder.AddProject<Projects.Landbridge_WorkerMcp>("worker-mcp", options => optio
     .WithEnvironment("Landbridge__Classifier__Url", "http://127.0.0.1:" + classifierPort)
     .WithHttpHealthCheck("/health");
 
-builder.AddProject<Projects.Landbridge_Dashboard>("dashboard", options => options.ExcludeLaunchProfile = true)
+var dashboard = builder.AddProject<Projects.Landbridge_Dashboard>("dashboard", options => options.ExcludeLaunchProfile = true)
     .WithReference(landbridgeDb)
     .WaitFor(mcp)
     .WaitFor(hub)
@@ -285,13 +286,14 @@ builder.AddProject<Projects.Landbridge_Relay>("relay", options => options.Exclud
 // dashboard origin (mcpUrl) to confirm. WaitFor(mcp): it calls the plane on connect.
 builder.AddProject<Projects.Landbridge_Preview>("preview", options => options.ExcludeLaunchProfile = true)
     .WaitFor(mcp)
+    .WaitFor(dashboard)
     .WithHttpEndpoint(port: previewHealthPort, targetPort: previewHealthPort, isProxied: false)
     .WithEnvironment("ASPNETCORE_URLS", previewHealthUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Preview__ListenPort", previewListenPort)
     .WithEnvironment("Preview__Domain", previewDomain)
     .WithEnvironment("Preview__ControlPlaneUrl", mcpUrl)
-    .WithEnvironment("Preview__DashboardUrl", mcpUrl)
+    .WithEnvironment("Preview__DashboardUrl", dashboardUrl)
     .WithEnvironment("Preview__ControlPlaneBearer", previewConnectBearer)
     .WithHttpHealthCheck("/health");
 
