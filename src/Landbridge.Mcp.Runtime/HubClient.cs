@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
@@ -67,6 +68,149 @@ public sealed class HubClient(HttpClient http, ILogger<HubClient> logger)
             return default;
         }
     }
+
+    /// <summary>
+    /// Membership SSE. Reconnects with <c>Last-Event-ID</c>. Catch-up on first
+    /// open is coalesced by the caller; this just yields <c>event: change</c>.
+    /// </summary>
+    public async IAsyncEnumerable<HubChange> WatchAsync(
+        string path, string bearer, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var ch = System.Threading.Channels.Channel.CreateUnbounded<HubChange>();
+        var pump = PumpAsync(ch.Writer, path, bearer, ct);
+        try
+        {
+            await foreach (var change in ch.Reader.ReadAllAsync(ct))
+                yield return change;
+        }
+        finally
+        {
+            try { await pump; }
+            catch (OperationCanceledException) { }
+        }
+    }
+
+    private async Task PumpAsync(
+        System.Threading.Channels.ChannelWriter<HubChange> writer, string path, string bearer, CancellationToken ct)
+    {
+        long last = 0;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                var stop = false;
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Get, path);
+                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+                    req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+                    if (last > 0)
+                        req.Headers.TryAddWithoutValidation("Last-Event-ID", last.ToString());
+                    using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                    if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                    {
+                        logger.LogWarning("hub SSE {Path} refused the forwarded bearer: {Status}", path, (int)resp.StatusCode);
+                        return;
+                    }
+                    if (resp.StatusCode is HttpStatusCode.NotFound)
+                        return;
+                    resp.EnsureSuccessStatusCode();
+                    await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+                    using var reader = new StreamReader(stream);
+                    await foreach (var frame in ReadSseAsync(reader, ct))
+                    {
+                        if (frame.Event is not "change" || string.IsNullOrEmpty(frame.Data))
+                            continue;
+                        if (frame.Id is not null && long.TryParse(frame.Id, out var id) && id > last)
+                            last = id;
+                        HubChange? change;
+                        try
+                        {
+                            change = JsonSerializer.Deserialize<HubChange>(frame.Data, Json);
+                        }
+                        catch (JsonException)
+                        {
+                            continue;
+                        }
+                        if (change is not null)
+                            await writer.WriteAsync(change, ct);
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (HttpRequestException ex)
+                {
+                    logger.LogWarning(ex, "hub SSE {Path} dropped", path);
+                }
+                catch (IOException ex)
+                {
+                    logger.LogWarning(ex, "hub SSE {Path} dropped", path);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "hub SSE {Path} failed", path);
+                    stop = true;
+                }
+
+                if (stop || ct.IsCancellationRequested)
+                    return;
+                await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            }
+        }
+        finally
+        {
+            writer.TryComplete();
+        }
+    }
+
+    private static async IAsyncEnumerable<(string? Id, string? Event, string Data)> ReadSseAsync(
+        StreamReader reader, [EnumeratorCancellation] CancellationToken ct)
+    {
+        string? id = null, ev = null;
+        var data = new System.Text.StringBuilder();
+        while (!ct.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(ct);
+            if (line is null)
+                yield break;
+            if (line.Length == 0)
+            {
+                if (ev is not null || data.Length > 0 || id is not null)
+                {
+                    yield return (id, ev, data.ToString());
+                    id = ev = null;
+                    data.Clear();
+                }
+                continue;
+            }
+            if (line.StartsWith(":", StringComparison.Ordinal))
+                continue;
+            var colon = line.IndexOf(':');
+            var field = colon < 0 ? line : line[..colon];
+            var value = colon < 0 ? "" : line[(colon + 1)..].TrimStart(' ');
+            switch (field)
+            {
+                case "id":
+                    id = value;
+                    break;
+                case "event":
+                    ev = value;
+                    break;
+                case "data":
+                    if (data.Length > 0)
+                        data.Append('\n');
+                    data.Append(value);
+                    break;
+            }
+        }
+    }
 }
+
+public sealed record HubChange(
+    [property: JsonPropertyName("queueId")] long QueueId,
+    [property: JsonPropertyName("topic")] string Topic,
+    [property: JsonPropertyName("entityId")] Guid? EntityId);
 
 

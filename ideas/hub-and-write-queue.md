@@ -250,7 +250,7 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 Dashboard is its own process, a Hub client like LeadMCP/WorkerMCP. The browser talks to Dashboard (cookie). Dashboard talks to Hub (Bearer copied from the cookie). Hub stays loopback.
 
 - Live (target): Dashboard holds EventSource per membership list + per visible row against Hub. Core death does not drop the circuit.
-- Live (today): 2s poll inside fused `Landbridge.Mcp`.
+- Live: Dashboard circuit subscribes to Hub membership SSE (`event: change`) and refetches JSON twins. 2s poll remains when Hub is unset.
 - At-rest / click: Dashboard `GET`s Hub JSON twins. Cookie POSTs (revoke, preview, permission) go to Core.
 - Core 502 during restart: retry mutation; **do not** tear down Hub SSE. Committed session state did not change. Machine rail follows `last_spoke_at`.
 
