@@ -19,7 +19,7 @@ else if (Ready && Snapshot is { } snap)
     <div class="obs-page">
         <ObservabilityDashboard Snapshot="snap" Now="Now" WindowLabel="@WindowLabel"
             Teams="Teams" SelectedTeamId="SelectedTeamId" Binding="Binding"
-            HumanId="HumanId" OnChanged="ReloadAsync" />
+            HumanId="HumanId" OperatorToken="OperatorToken" OnChanged="ReloadAsync" />
     </div>
 }
 

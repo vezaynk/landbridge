@@ -3,8 +3,10 @@ using System.Text;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -81,6 +83,18 @@ public sealed class FrictionTools(FrictionStore store, TokenService tokens, Frie
         {
             throw new McpException(
                 $"message is over the {FrictionStore.MaxMessageBytes / 1024} KB cap; shorten it");
+        }
+
+        var header = http.HttpContext?.Request.Headers.Authorization.ToString();
+        const string prefix = "Bearer ";
+        var bearer = header is { Length: > 0 } && header.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            ? header[prefix.Length..].Trim()
+            : null;
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && bearer is { Length: > 0 })
+        {
+            var via = await core.PostAsync("/core/v1/friction", bearer, new CoreFrictionBody(message, teamId), ct);
+            return via.Describe();
         }
 
         await store.RecordAsync(role, team, sessionId, humanId, message, ct);

@@ -369,6 +369,17 @@ public sealed class WorkerTools(
         CancellationToken ct)
     {
         var caller = Caller;
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreForwardReply>("/core/v1/forwards", bearer,
+                new CoreForwardBody(serviceName), ct);
+            if (via is { Ok: true, Host: { } host, Port: { } port, ForwardId: { } fid, ExpiresAt: { } exp })
+                return new OpenForwardResult(host, port, fid, exp);
+            throw new McpException(via?.Rule is { } rule
+                ? $"rejected ({rule}): {via.Reason}"
+                : $"open_forward failed: {via?.Reason}");
+        }
 
         // 1. Issue the grant (authority gates: §9 check 11, Team scoping §8.2).
         var issued = await grants.IssueAsync(caller, serviceName, ct) switch
@@ -413,6 +424,15 @@ public sealed class WorkerTools(
         CancellationToken ct = default)
     {
         var caller = Caller;
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CorePreviewReply>("/core/v1/previews", bearer,
+                new CorePreviewMintBody(serviceName, isPublic, ttlMinutes), ct);
+            if (via is { Ok: true, Url: { } url, Auth: { } auth, ExpiresAt: { } exp })
+                return new OpenPreviewResult(url, auth, exp);
+            throw new McpException(via?.Reason ?? "open_preview refused");
+        }
         var policy = isPublic ? PreviewAuthPolicy.Public : PreviewAuthPolicy.Gated;
         var ttl = PreviewMint.ResolveTtl(policy, ttlMinutes);
 

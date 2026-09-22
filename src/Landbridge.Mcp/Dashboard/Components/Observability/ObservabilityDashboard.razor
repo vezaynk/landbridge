@@ -54,7 +54,7 @@
     <div class="obs-body @(Selected is null ? "obs-body--no-detail" : "")">
         <MachineRail Machines="Snapshot.Machines" Now="Now" LaneCount="Snapshot.Lanes.Count"
             Teams="Teams" SelectedTeamId="SelectedTeamId" Binding="Binding"
-            HumanId="HumanId" OnChanged="Changed" OnNotice="ShowNotice" />
+            HumanId="HumanId" OperatorToken="OperatorToken" OnChanged="Changed" OnNotice="ShowNotice" />
 
         <div class="obs-lanes">
             <div class="obs-lanes__head">
@@ -85,7 +85,7 @@
         @if (Selected is not null)
         {
             <DetailPanel Lane="Selected" Now="Now" WindowLabel="@WindowLabel" Binding="Binding"
-                HumanId="HumanId" Receipts="Snapshot.Receiving ?? []"
+                HumanId="HumanId" OperatorToken="OperatorToken" Receipts="Snapshot.Receiving ?? []"
                 OnChanged="Changed" OnNotice="ShowNotice" />
         }
     </div>
@@ -112,6 +112,9 @@
 
     [Parameter]
     public Guid HumanId { get; set; }
+
+    [Parameter]
+    public string? OperatorToken { get; set; }
 
     [Parameter]
     public EventCallback OnChanged { get; set; }

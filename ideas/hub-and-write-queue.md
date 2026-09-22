@@ -281,7 +281,7 @@ Hub stays **nouns**. Anything that repackages those nouns into a Lead or worker 
 | Reads | Hub → tool JSON | Hub → tool JSON | Hub → board | last-value rows + wakes | nothing long-lived |
 | Inboxes | team-wide flags; **watch** | `get_session`; **watch** | human inbox compose | session list / document | mark-read / `PullReceipt` |
 | Skills / UI | lead skill | worker skill | Blazor | — | — |
-| Writes | 202/accept → Core; `Apply` until Part 2 | same | cookie POST → Core | no | `Apply` |
+| Writes | `POST /core/v1` Bearer (sync Apply); in-process when CoreUrl unset | same | cookie POST + circuit → Core | no | `Apply` |
 
 Shared MCP resources are **not** one bundle. Each host ships its skill. What they share is Hub (and later Core's accept endpoint). MCP Tasks is a LeadMCP projection of Hub session rows, not a Hub route.
 
@@ -307,7 +307,7 @@ Each PR's base is the previous branch.
 2. **Hub read shapes** those hosts need + `live` = last-spoke only + `HubClient` 5xx → null. Revert fused `list_profiles` off Hub until LeadMCP exists (or filter to `live`).
 3. **LeadMCP / WorkerMCP hosts** — done.
 4. **Cutover** — `PublicMcpUrl` is LeadMCP, `WorkerMcpUrl` is WorkerMCP. Core no longer maps MCP tools or the lead inbox. Enroll is Auth.
-5. **Dashboard origin** — browser hits Dashboard; Core no longer maps `/dashboard`. Cookie POSTs still `Apply` in Dashboard until Part 2.
+5. **Dashboard origin** — browser hits Dashboard; Core no longer maps `/dashboard`. Cookie POSTs and fleet-board circuit mutations POST to Core when `Landbridge:CoreUrl` is set.
 6. **Façade reads** — LeadMCP `list_profiles` / `get_team_state` / team-wide inbox identifiers, WorkerMCP `list_processes`, and the Dashboard board package Hub nouns (store fallback when Hub is unset). Per-session inbox fetch still writes. Event-log marks/tail and `LastProgress` are omitted on the Hub path.
 7. **Core writes** — `POST /core/v1/*` is sync Apply on Core (registry sends included). Façades forward Bearer when `Landbridge:CoreUrl` is set. Not the 202 queue yet.
 8. **Core** is `/runner` + dispatch + `Apply` + `/core/v1` + `/relay/validate` + `/preview/connect`.

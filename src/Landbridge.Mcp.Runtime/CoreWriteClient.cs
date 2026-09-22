@@ -48,12 +48,17 @@ public sealed class CoreWriteClient(HttpClient http, ILogger<CoreWriteClient> lo
         };
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         using var resp = await http.SendAsync(req, ct);
-        if (!resp.IsSuccessStatusCode)
+        T? parsed = default;
+        try
         {
-            logger.LogWarning("core POST {Path} {Status}", path, (int)resp.StatusCode);
-            return default;
+            parsed = await resp.Content.ReadFromJsonAsync<T>(Json, ct);
         }
-        return await resp.Content.ReadFromJsonAsync<T>(Json, ct);
+        catch (JsonException)
+        {
+        }
+        if (!resp.IsSuccessStatusCode)
+            logger.LogWarning("core POST {Path} {Status}", path, (int)resp.StatusCode);
+        return parsed;
     }
 }
 
@@ -96,3 +101,13 @@ public sealed record CoreProcessStartBody(string Name, string[] Spawn, string? W
 public sealed record CoreProcessBody(string Name, string? Data = null, bool AppendNewline = true);
 public sealed record CoreProcessStartReply(bool Started, string? LogPath, string? Refusal);
 public sealed record CoreProcessActionReply(bool Ok, string? Refusal, int? Value);
+public sealed record CoreForwardBody(string ServiceName, string? TeamId = null);
+public sealed record CoreForwardReply(bool Ok, string? Host, int? Port, string? ForwardId, DateTimeOffset? ExpiresAt, string? Reason, string? Rule = null);
+public sealed record CorePreviewMintBody(string ServiceName, bool IsPublic = false, int? TtlMinutes = null, string? TeamId = null, string? SessionId = null);
+public sealed record CorePreviewReply(bool Ok, string? Url = null, string? Auth = null, DateTimeOffset? ExpiresAt = null, Guid? PreviewId = null, string? Reason = null, string? Label = null);
+public sealed record CorePreviewPatchBody(Guid PreviewId, bool? IsPublic = null, bool Revoke = false);
+public sealed record CoreFrictionBody(string Message, string? TeamId = null);
+public sealed record CoreRevokeMachineBody(string MachineId);
+public sealed record CoreRevokeMachineReply(bool Ok, bool ChannelClosed, int SessionsRequeued, int WorkersRevoked, string? Reason);
+public sealed record CoreCloseForwardBody(Guid ForwardId);
+public sealed record CoreCloseForwardReply(bool Ok, string? ServiceName = null, string? Reason = null);

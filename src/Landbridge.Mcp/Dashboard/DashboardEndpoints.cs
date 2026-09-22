@@ -242,12 +242,34 @@ public static class DashboardEndpoints
 
         var isPublic = string.Equals(form["auth"].ToString(), "public", StringComparison.OrdinalIgnoreCase);
         var policy = isPublic ? Landbridge.Core.PreviewAuthPolicy.Public : Landbridge.Core.PreviewAuthPolicy.Gated;
-        var ttl = PreviewMint.ResolveTtl(policy, int.TryParse(form["ttl"].ToString(), out var m) ? m : null);
+        var ttlMinutes = int.TryParse(form["ttl"].ToString(), out var m) ? m : (int?)null;
+        var ttl = PreviewMint.ResolveTtl(policy, ttlMinutes);
+        var back = SafeNext(form["return"].ToString());
 
+        var core = http.RequestServices.GetService<CoreWriteClient>();
+        var bearer = DashboardAuth.ReadToken(http);
+        if (core is { Enabled: true } && !string.IsNullOrEmpty(bearer))
+        {
+            var via = await core.PostAsAsync<CorePreviewReply>("/core/v1/previews", bearer,
+                new CorePreviewMintBody(serviceName, isPublic, ttlMinutes,
+                    teamId.ToString("D"), sessionId.ToString("D")), ct);
+            if (via is not { Ok: true, Url: { } coreUrl })
+                return Results.BadRequest(new { error = via?.Reason ?? "preview mint failed" });
+            return DashboardNegotiate.WantsJson(http)
+                ? Results.Json(new { url = coreUrl, auth = via.Auth, expiresAt = via.ExpiresAt }, Json)
+                : RazorPage<PreviewCreatedPage>(new
+                {
+                    Url = coreUrl,
+                    Policy = policy,
+                    ExpiresAt = via.ExpiresAt ?? default(DateTimeOffset),
+                    TeamId = teamId,
+                    TeamSlug = await tokens.FindTeamSlugAsync(teamId, ct),
+                    BackHref = back,
+                });
+        }
         var mint = await previews.CreateAsync(
             new Landbridge.Core.TeamId(teamId), new Landbridge.Core.SessionId(sessionId), serviceName, policy, ttl, ct);
         var url = PreviewMint.Url(PreviewUrlBase(config), mint.Label);
-        var back = SafeNext(form["return"].ToString());
 
         return DashboardNegotiate.WantsJson(http)
             ? Results.Json(new { url, auth = policy.ToString().ToLowerInvariant(), expiresAt = mint.Mapping.ExpiresAt }, Json)
@@ -412,6 +434,20 @@ public static class DashboardEndpoints
             if (!Guid.TryParse(form["machineId"].ToString(), out var machineId))
                 return Results.BadRequest(new { error = "invalid machine id" });
 
+            var core = http.RequestServices.GetService<CoreWriteClient>();
+            var bearer = DashboardAuth.ReadToken(http);
+            if (core is { Enabled: true } && !string.IsNullOrEmpty(bearer))
+            {
+                var via = await core.PostAsAsync<CoreRevokeMachineReply>("/core/v1/machines/revoke", bearer,
+                    new CoreRevokeMachineBody(machineId.ToString("D")), ct);
+                if (via is not { Ok: true })
+                    return Results.Json(new { error = via?.Reason ?? "revoke failed" }, Json, statusCode: 400);
+                var revokedCore = new MachineRevocation(via.ChannelClosed, via.SessionsRequeued, via.WorkersRevoked);
+                return DashboardNegotiate.WantsJson(http)
+                    ? Results.Json(new { machineId, channelClosed = revokedCore.ChannelClosed, sessionsRequeued = revokedCore.SessionsRequeued, workersRevoked = revokedCore.WorkersRevoked }, Json)
+                    : RazorPage<MachineRevokedPage>(new { MachineId = machineId, Revoked = revokedCore });
+            }
+
             var revoked = await revocations.RevokeAsync(machineId, ct);
             return DashboardNegotiate.WantsJson(http)
                 ? Results.Json(
@@ -441,6 +477,15 @@ public static class DashboardEndpoints
             if (!Guid.TryParse(form["machineId"].ToString(), out var machineId))
                 return Results.BadRequest(new { error = "invalid machine id" });
             var back = SafeNext(form["return"].ToString());
+            var core = http.RequestServices.GetService<CoreWriteClient>();
+            var bearer = DashboardAuth.ReadToken(http);
+            if (core is { Enabled: true } && !string.IsNullOrEmpty(bearer))
+            {
+                var via = await core.PostAsync("/core/v1/bind-machine", bearer, new CoreBindBody(machineId.ToString("D")), ct);
+                return via.Status == "applied"
+                    ? Notice(http, "Machine bound", via.Reason ?? "bound", back)
+                    : Notice(http, "Could not bind", via.Reason ?? "refused", back, 400);
+            }
             return await bindings.BindAsync(human.HumanId, machineId, ct) switch
             {
                 LeadMachineBindResult.Bound b => Notice(http, "Machine bound",
@@ -465,6 +510,13 @@ public static class DashboardEndpoints
                 return Refused(http, BindingIsHumanOnly);
             var form = await http.Request.ReadFormAsync(ct);
             var back = SafeNext(form["return"].ToString());
+            var core = http.RequestServices.GetService<CoreWriteClient>();
+            var bearer = DashboardAuth.ReadToken(http);
+            if (core is { Enabled: true } && !string.IsNullOrEmpty(bearer))
+            {
+                var via = await core.PostAsync("/core/v1/unbind-machine", bearer, new { }, ct);
+                return Notice(http, "Machine unbound", via.Reason ?? "unbound", back);
+            }
             var released = await bindings.UnbindAsync(human.HumanId, ct);
             var msg = released is null
                 ? "You had no machine bound."
@@ -496,6 +548,19 @@ public static class DashboardEndpoints
             if (string.IsNullOrWhiteSpace(serviceName))
                 return Results.BadRequest(new { error = "service name required" });
 
+            var core = http.RequestServices.GetService<CoreWriteClient>();
+            var bearer = DashboardAuth.ReadToken(http);
+            if (core is { Enabled: true } && !string.IsNullOrEmpty(bearer))
+            {
+                var via = await core.PostAsAsync<CoreForwardReply>("/core/v1/forwards/lead", bearer,
+                    new CoreForwardBody(serviceName, teamId.ToString("D")), ct);
+                if (via is { Ok: true, Port: { } port })
+                    return Notice(http, "Forward open",
+                        "One connection, promptly. Connect on the bound machine.",
+                        back, detail: $"{Landbridge.Mcp.Tools.WorkerTools.ForwardLoopbackHost}:{port}");
+                return Notice(http, via?.Reason == "no machine bound" ? "No machine bound" : "Forward refused",
+                    via?.Reason ?? "failed", back, 400);
+            }
             var bound = await bindings.GetAsync(human.HumanId, ct);
             if (bound is null)
                 return Notice(http, "No machine bound",
@@ -537,6 +602,16 @@ public static class DashboardEndpoints
             var back = SafeNext(form["return"].ToString());
             if (!Guid.TryParse(form["previewId"].ToString(), out var previewId))
                 return Results.BadRequest(new { error = "invalid preview id" });
+            var core = http.RequestServices.GetService<CoreWriteClient>();
+            var bearer = DashboardAuth.ReadToken(http);
+            if (core is { Enabled: true } && !string.IsNullOrEmpty(bearer))
+            {
+                await core.PostAsAsync<CorePreviewReply>("/core/v1/previews/patch", bearer,
+                    new CorePreviewPatchBody(previewId, Revoke: true), ct);
+                return DashboardNegotiate.WantsJson(http)
+                    ? Results.Json(new { revoked = previewId }, Json)
+                    : Results.Redirect(back);
+            }
             await previews.RevokeAsync(previewId, ct);
             return DashboardNegotiate.WantsJson(http)
                 ? Results.Json(new { revoked = previewId }, Json)
@@ -562,6 +637,24 @@ public static class DashboardEndpoints
             var policy = FormIsPublic(form)
                 ? Landbridge.Core.PreviewAuthPolicy.Public
                 : Landbridge.Core.PreviewAuthPolicy.Gated;
+            var core = http.RequestServices.GetService<CoreWriteClient>();
+            var bearer = DashboardAuth.ReadToken(http);
+            if (core is { Enabled: true } && !string.IsNullOrEmpty(bearer))
+            {
+                var via = await core.PostAsAsync<CorePreviewReply>("/core/v1/previews/patch", bearer,
+                    new CorePreviewPatchBody(previewId, IsPublic: policy == Landbridge.Core.PreviewAuthPolicy.Public), ct);
+                if (via is not { Ok: true })
+                    return Notice(http, "Not found", via?.Reason ?? "that preview is already gone.", back, 404);
+                var authCore = policy.ToString().ToLowerInvariant();
+                return DashboardNegotiate.WantsJson(http)
+                    ? Results.Json(new { previewId, auth = authCore }, Json)
+                    : Notice(http, policy == Landbridge.Core.PreviewAuthPolicy.Public
+                        ? "Preview is public" : "Preview is gated",
+                        policy == Landbridge.Core.PreviewAuthPolicy.Public
+                            ? "Anyone with the link can open it."
+                            : "Opening this link requires a Landbridge operator session in the browser.",
+                        back);
+            }
             if (!await previews.SetAuthPolicyAsync(previewId, policy, ct))
                 return Notice(http, "Not found", "that preview is already gone.", back, 404);
             var auth = policy.ToString().ToLowerInvariant();

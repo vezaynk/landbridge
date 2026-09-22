@@ -86,6 +86,9 @@
     public Guid HumanId { get; set; }
 
     [Parameter]
+    public string? OperatorToken { get; set; }
+
+    [Parameter]
     public EventCallback OnChanged { get; set; }
 
     [Parameter]
@@ -128,10 +131,10 @@
 
     private Task BindAsync(string machineId) =>
         Guid.TryParse(machineId, out var id)
-            ? Run(() => Mutations.BindMachineAsync(HumanId, id, CancellationToken.None))
+            ? Run(() => Mutations.BindMachineAsync(HumanId, id, OperatorToken, CancellationToken.None))
             : Task.CompletedTask;
 
-    private Task UnbindAsync() => Run(() => Mutations.UnbindMachineAsync(HumanId, CancellationToken.None));
+    private Task UnbindAsync() => Run(() => Mutations.UnbindMachineAsync(HumanId, OperatorToken, CancellationToken.None));
 
     private async Task Run(Func<Task<FleetNotice>> action)
     {

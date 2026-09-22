@@ -1,3 +1,4 @@
+using System.Text;
 using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
@@ -7,6 +8,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Configuration;
 
 namespace Landbridge.Mcp;
 
@@ -29,11 +31,20 @@ public static class CoreWriteEndpoints
         g.MapPost("/sessions/{id}/report", ReportAsync);
         g.MapPost("/sessions/{id}/ask", AskAsync);
         g.MapPost("/sessions/{id}/services", RegisterServiceAsync);
+        g.MapPost("/sessions/{id}/register-service", RegisterServiceFromDashboardAsync);
+        g.MapPost("/sessions/{id}/unregister-service", UnregisterServiceAsync);
         g.MapPost("/bind-machine", BindMachineAsync);
         g.MapPost("/unbind-machine", UnbindMachineAsync);
         g.MapPost("/processes/start", ProcessStartAsync);
         g.MapPost("/processes/stop", ProcessStopAsync);
         g.MapPost("/processes/write", ProcessWriteAsync);
+        g.MapPost("/forwards", OpenWorkerForwardAsync);
+        g.MapPost("/forwards/lead", OpenLeadForwardAsync);
+        g.MapPost("/forwards/close", CloseForwardAsync);
+        g.MapPost("/previews", MintPreviewAsync);
+        g.MapPost("/previews/patch", PatchPreviewAsync);
+        g.MapPost("/friction", RecordFrictionAsync);
+        g.MapPost("/machines/revoke", RevokeMachineAsync);
         return app;
     }
 
@@ -201,6 +212,32 @@ public static class CoreWriteEndpoints
         return Store(await store.RegisterServiceAsync(worker.Caller!, body.Name, body.Port.Value, ct));
     }
 
+    private static async Task<IResult> RegisterServiceFromDashboardAsync(
+        HttpContext http, string id, CoreSessionBody body, SessionStore store, FriendlyIds ids, CancellationToken ct)
+    {
+        if (RequireHuman(http) is { } err)
+            return err;
+        var session = await ids.TrySessionAsync(id, ct);
+        if (session is null)
+            return Store(new StoreResult.NotFound("no such session"));
+        if (string.IsNullOrWhiteSpace(body.Name) || body.Port is null)
+            return Results.Json(new CoreStoreReply("rejected", Reason: "name and port required"), CoreWriteClient.Json);
+        return Store(await store.RegisterServiceFromDashboardAsync(session.Value, body.Name, body.Port.Value, ct));
+    }
+
+    private static async Task<IResult> UnregisterServiceAsync(
+        HttpContext http, string id, CoreSessionBody body, SessionStore store, FriendlyIds ids, CancellationToken ct)
+    {
+        if (RequireHuman(http) is { } err)
+            return err;
+        var session = await ids.TrySessionAsync(id, ct);
+        if (session is null)
+            return Store(new StoreResult.NotFound("no such session"));
+        if (string.IsNullOrWhiteSpace(body.Name))
+            return Results.Json(new CoreStoreReply("rejected", Reason: "name required"), CoreWriteClient.Json);
+        return Store(await store.UnregisterServiceAsync(session.Value, body.Name, ct));
+    }
+
     private static async Task<IResult> BindMachineAsync(
         HttpContext http, CoreBindBody body,
         [FromServices] LeadMachineBindingService machines, FriendlyIds ids, CancellationToken ct)
@@ -264,6 +301,197 @@ public static class CoreWriteEndpoints
         return Results.Json(new CoreProcessActionReply(r.Ok, r.Refusal, r.Value), CoreWriteClient.Json);
     }
 
+    private static async Task<IResult> OpenWorkerForwardAsync(
+        HttpContext http, CoreForwardBody body, RelayGrantService grants, ForwardOrchestrator forwards,
+        IConfiguration config, CancellationToken ct)
+    {
+        var worker = Worker(http);
+        if (worker.Error is { } err)
+            return err;
+        var issued = await grants.IssueAsync(worker.Caller!, body.ServiceName, ct);
+        if (issued is not RelayGrantResult.Issued grant)
+        {
+            var why = issued is RelayGrantResult.Refused r ? r.Reason : "unknown grant result";
+            var rule = issued is RelayGrantResult.Refused refused ? refused.Rule.ToString() : null;
+            return Results.Json(new CoreForwardReply(false, null, null, null, null, why, rule), CoreWriteClient.Json);
+        }
+        return await forwards.EstablishAsync(worker.Caller!, grant, body.ServiceName, RelayUrl(config), ct) switch
+        {
+            ForwardEstablishResult.Established e => Results.Json(
+                new CoreForwardReply(true, "127.0.0.1", e.Port, grant.ForwardId.ToString(), grant.ExpiresAt, null),
+                CoreWriteClient.Json),
+            ForwardEstablishResult.Failed f => Results.Json(
+                new CoreForwardReply(false, null, null, null, null, f.Reason), CoreWriteClient.Json),
+            _ => Results.Json(new CoreForwardReply(false, null, null, null, null, "unknown forward result"), CoreWriteClient.Json),
+        };
+    }
+
+    private static async Task<IResult> OpenLeadForwardAsync(
+        HttpContext http, CoreForwardBody body, TokenService tokens, FriendlyIds ids,
+        [FromServices] LeadMachineBindingService machines, RelayGrantService grants, ForwardOrchestrator forwards,
+        IConfiguration config, CancellationToken ct)
+    {
+        var human = HumanId(http);
+        if (human is null)
+            return Results.Json(new CoreForwardReply(false, null, null, null, null, "a human identity is required"), CoreWriteClient.Json);
+        if (LandbridgeClaims.AsLeadPrincipal(http.User) is not null)
+        {
+            var lead = await LeadOn(http, tokens, ids, body.TeamId ?? "", ct);
+            if (lead.Error is { } err)
+                return err;
+        }
+        var team = await ids.TryTeamAsync(body.TeamId, ct);
+        if (team is null)
+            return Results.Json(new CoreForwardReply(false, null, null, null, null, "invalid team id"), CoreWriteClient.Json);
+        var bound = await machines.GetAsync(human.Value, ct);
+        if (bound is null)
+            return Results.Json(new CoreForwardReply(false, null, null, null, null, "no machine bound"), CoreWriteClient.Json);
+        var issued = await grants.IssueForLeadAsync(team.Value, body.ServiceName, ct);
+        if (issued is not RelayGrantResult.Issued grant)
+        {
+            var why = issued is RelayGrantResult.Refused r ? r.Reason : "could not issue a grant";
+            var rule = issued is RelayGrantResult.Refused refused ? refused.Rule.ToString() : null;
+            return Results.Json(new CoreForwardReply(false, null, null, null, null, why, rule), CoreWriteClient.Json);
+        }
+        return await forwards.EstablishForLeadAsync(bound.MachineId, grant, body.ServiceName, RelayUrl(config), ct) switch
+        {
+            ForwardEstablishResult.Established e => Results.Json(
+                new CoreForwardReply(true, "127.0.0.1", e.Port, grant.ForwardId.ToString(), grant.ExpiresAt, null),
+                CoreWriteClient.Json),
+            ForwardEstablishResult.Failed f => Results.Json(
+                new CoreForwardReply(false, null, null, null, null, f.Reason), CoreWriteClient.Json),
+            _ => Results.Json(new CoreForwardReply(false, null, null, null, null, "unknown forward result"), CoreWriteClient.Json),
+        };
+    }
+
+    private static async Task<IResult> CloseForwardAsync(
+        HttpContext http, CoreCloseForwardBody body, RelayGrantService grants,
+        ForwardTeardownService teardown, CancellationToken ct)
+    {
+        if (RequireHuman(http) is { } err)
+            return err;
+        var closed = await grants.CloseConsumerAsync(body.ForwardId, ct);
+        if (closed is null)
+            return Results.Json(new CoreCloseForwardReply(false, Reason: "not found"), CoreWriteClient.Json);
+        var (producer, consumer, name) = closed.Value;
+        await teardown.CloseAsync(
+            [new ForwardTeardown(producer, body.ForwardId.ToString(), consumer)], ct);
+        return Results.Json(new CoreCloseForwardReply(true, name), CoreWriteClient.Json);
+    }
+
+    private static async Task<IResult> MintPreviewAsync(
+        HttpContext http, CorePreviewMintBody body, PreviewMappingService previews,
+        TokenService tokens, FriendlyIds ids, IConfiguration config, CancellationToken ct)
+    {
+        var policy = body.IsPublic ? PreviewAuthPolicy.Public : PreviewAuthPolicy.Gated;
+        var ttl = PreviewMint.ResolveTtl(policy, body.TtlMinutes);
+        PreviewMintResult mint;
+        if (Worker(http).Caller is { } caller)
+        {
+            var created = await previews.CreateForWorkerAsync(caller, body.ServiceName, policy, ttl, ct);
+            if (created is null)
+                return Results.Json(new CorePreviewReply(false, Reason:
+                    $"you have not registered a service named '{body.ServiceName}' on this session; register it with " +
+                    "register_service first (a preview only ever exposes your own session's service)."),
+                    CoreWriteClient.Json);
+            mint = created;
+        }
+        else
+        {
+            var team = await ids.TryTeamAsync(body.TeamId, ct);
+            var session = await ids.TrySessionAsync(body.SessionId, ct);
+            if (team is null || session is null)
+                return Results.Json(new CorePreviewReply(false, Reason: "team and session required"), CoreWriteClient.Json);
+            if (LandbridgeClaims.AsLeadPrincipal(http.User) is { } lead
+                && !await tokens.OwnsTeamAsync(lead.CredentialId, team.Value, ct))
+                return Results.Json(new CorePreviewReply(false, Reason: "not your team"), CoreWriteClient.Json, statusCode: 403);
+            mint = await previews.CreateAsync(team.Value, session.Value, body.ServiceName, policy, ttl, ct);
+        }
+        var baseUrl = config[PreviewMint.UrlBaseConfigKey]
+            ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PREVIEW_URL_BASE")
+            ?? "http://preview.localhost";
+        return Results.Json(new CorePreviewReply(
+            true, PreviewMint.Url(baseUrl, mint.Label), policy.ToString().ToLowerInvariant(),
+            mint.Mapping.ExpiresAt, mint.Mapping.Id, Label: mint.Label), CoreWriteClient.Json);
+    }
+
+    private static async Task<IResult> PatchPreviewAsync(
+        HttpContext http, CorePreviewPatchBody body, PreviewMappingService previews, CancellationToken ct)
+    {
+        if (HumanId(http) is null && LandbridgeClaims.AsHuman(http.User) is null)
+            return Results.Json(new CorePreviewReply(false, Reason: "human required"), CoreWriteClient.Json, statusCode: 403);
+        if (body.Revoke)
+        {
+            await previews.RevokeAsync(body.PreviewId, ct);
+            return Results.Json(new CorePreviewReply(true, PreviewId: body.PreviewId), CoreWriteClient.Json);
+        }
+        if (body.IsPublic is { } pub)
+        {
+            var policy = pub ? PreviewAuthPolicy.Public : PreviewAuthPolicy.Gated;
+            if (!await previews.SetAuthPolicyAsync(body.PreviewId, policy, ct))
+                return Results.Json(new CorePreviewReply(false, Reason: "not found"), CoreWriteClient.Json, statusCode: 404);
+            return Results.Json(new CorePreviewReply(true, Auth: policy.ToString().ToLowerInvariant(), PreviewId: body.PreviewId), CoreWriteClient.Json);
+        }
+        return Results.Json(new CorePreviewReply(false, Reason: "nothing to patch"), CoreWriteClient.Json);
+    }
+
+    private static async Task<IResult> RecordFrictionAsync(
+        HttpContext http, CoreFrictionBody body, FrictionStore friction, TokenService tokens,
+        FriendlyIds ids, CancellationToken ct)
+    {
+        string role;
+        Guid team;
+        Guid? sessionId;
+        Guid? humanId;
+        if (LandbridgeClaims.AsLeadPrincipal(http.User) is { } lead)
+        {
+            var owned = await ids.TryTeamAsync(body.TeamId, ct);
+            if (owned is null || !await tokens.OwnsTeamAsync(lead.CredentialId, owned.Value, ct))
+                return Results.Json(new CoreStoreReply("rejected", Reason: "teamId is required and must be owned"), CoreWriteClient.Json, statusCode: 403);
+            role = FrictionReportRow.LeadRole;
+            team = owned.Value.Value;
+            sessionId = null;
+            humanId = lead.HumanId;
+        }
+        else if (LandbridgeClaims.AsWorker(http.User) is { } worker)
+        {
+            role = FrictionReportRow.WorkerRole;
+            team = worker.Team.Value;
+            sessionId = worker.Session.Value;
+            humanId = null;
+        }
+        else
+            return Results.Json(new CoreStoreReply("rejected", Reason: "lead or worker required"), CoreWriteClient.Json, statusCode: 403);
+        if (string.IsNullOrWhiteSpace(body.Message))
+            return Results.Json(new CoreStoreReply("rejected", Reason:
+                "message is required: say what friction you felt in Landbridge and how it could be improved"),
+                CoreWriteClient.Json);
+        if (Encoding.UTF8.GetByteCount(body.Message) > FrictionStore.MaxMessageBytes)
+            return Results.Json(new CoreStoreReply("rejected", Reason:
+                $"message is over the {FrictionStore.MaxMessageBytes / 1024} KB cap; shorten it"),
+                CoreWriteClient.Json);
+        await friction.RecordAsync(role, team, sessionId, humanId, body.Message, ct);
+        return Results.Json(new CoreStoreReply("applied", Reason: "ok: friction recorded"), CoreWriteClient.Json);
+    }
+
+    private static async Task<IResult> RevokeMachineAsync(
+        HttpContext http, CoreRevokeMachineBody body, MachineRevocationService revocations,
+        FriendlyIds ids, CancellationToken ct)
+    {
+        if (LandbridgeClaims.ToPrincipal(http.User) is not Principal.Human)
+            return Results.Json(new CoreRevokeMachineReply(false, false, 0, 0, "human-only"), CoreWriteClient.Json, statusCode: 403);
+        var machine = await ids.TryMachineAsync(body.MachineId, ct);
+        if (machine is null)
+            return Results.Json(new CoreRevokeMachineReply(false, false, 0, 0, "invalid machine id"), CoreWriteClient.Json);
+        var revoked = await revocations.RevokeAsync(machine.Value, ct);
+        return Results.Json(new CoreRevokeMachineReply(true, revoked.ChannelClosed, revoked.SessionsRequeued, revoked.WorkersRevoked, null), CoreWriteClient.Json);
+    }
+
+    private static string RelayUrl(IConfiguration config) =>
+        config["Landbridge:RelayUrl"]
+        ?? Environment.GetEnvironmentVariable("LANDBRIDGE_RELAY_URL")
+        ?? "http://127.0.0.1:5100";
+
     private static async Task Doorbell(
         RunnerConnectionRegistry registry, SessionId id, Guid? machine, bool live, StoreResult result, CancellationToken ct)
     {
@@ -285,6 +513,11 @@ public static class CoreWriteEndpoints
             : 409;
         return Results.Json(reply, CoreWriteClient.Json, statusCode: code);
     }
+
+    private static IResult? RequireHuman(HttpContext http) =>
+        LandbridgeClaims.ToPrincipal(http.User) is Principal.Human
+            ? null
+            : Results.Json(new CoreStoreReply("rejected", Reason: "human-only"), CoreWriteClient.Json, statusCode: 403);
 
     private static Guid? HumanId(HttpContext http) => LandbridgeClaims.ToPrincipal(http.User) switch
     {

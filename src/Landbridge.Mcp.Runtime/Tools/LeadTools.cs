@@ -566,6 +566,26 @@ public sealed class LeadTools(
         var actor = await LeadOn(teamId, ct);
         var lead = LeadPrincipal;
         var human = HumanOf(lead);
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreForwardReply>("/core/v1/forwards/lead", bearer,
+                new CoreForwardBody(serviceName, teamId), ct);
+            if (via is { Ok: true, Host: { } host, Port: { } port, ForwardId: { } fid, ExpiresAt: { } exp })
+                return new OpenForwardResult(host, port, fid, exp);
+            var why = via?.Reason;
+            throw new McpException(
+                why == "no machine bound"
+                    ? "you have no machine bound, so there is nowhere to open a local port. Three steps: " +
+                      "install and enroll landbridged on the machine your human is sitting at, " +
+                      "GET http://127.0.0.1:19378 for that box's machine id, bind_machine with it, then call " +
+                      "open_lead_forward again. " +
+                      "If the service speaks HTTP, its worker can mint a browser preview URL with open_preview " +
+                      "instead — that needs no landbridged on your human's side."
+                    : via?.Rule is { } rule
+                        ? $"rejected ({rule}): {why}"
+                        : $"open_lead_forward failed: {why}");
+        }
 
         // 1. Where does this person sit? Nothing infers it — the binding is the only
         // answer, and its absence is a first-class, actionable refusal (§8.3).
