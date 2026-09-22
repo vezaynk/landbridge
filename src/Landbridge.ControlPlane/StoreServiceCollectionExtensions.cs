@@ -58,6 +58,7 @@ public static class StoreServiceCollectionExtensions
         services.TryAddScoped<FriendlyIds>();
         services.TryAddScoped<TeamForwardUsageService>();
         services.TryAddScoped<FrictionStore>();
+        services.TryAddScoped<CommandQueue>();
         return services;
     }
 }

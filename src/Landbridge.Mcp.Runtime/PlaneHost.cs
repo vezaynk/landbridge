@@ -7,8 +7,10 @@ using Microsoft.EntityFrameworkCore;
 namespace Landbridge.Mcp;
 
 /// <summary>
-/// Shared store + Bearer auth + Hub client for LeadMCP, WorkerMCP, and
-/// the fused plane. No dispatch, no <c>/runner</c>.
+/// Shared store + Bearer auth for LeadMCP, WorkerMCP, Dashboard, and Core.
+/// No dispatch, no <c>/runner</c>, no inbox LISTEN. Core adds
+/// <see cref="AddDispatchListener"/>; MCP hosts add
+/// <see cref="AddInboxFanout"/> (LISTEN only when Hub is unset).
 /// </summary>
 public static class PlaneHost
 {
@@ -16,6 +18,9 @@ public static class PlaneHost
         config.GetConnectionString("Landbridge")
         ?? Environment.GetEnvironmentVariable("LANDBRIDGE_DB")
         ?? "Host=localhost;Database=landbridge;Username=landbridge";
+
+    public static bool HubConfigured(IConfiguration config) =>
+        !string.IsNullOrWhiteSpace(config["Landbridge:HubUrl"]);
 
     public static WebApplicationBuilder AddPlane(this WebApplicationBuilder builder)
     {
@@ -53,12 +58,35 @@ public static class PlaneHost
                 ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PUBLIC_MCP_URL"),
             builder.Configuration["Landbridge:AuthUrl"]
                 ?? Environment.GetEnvironmentVariable("LANDBRIDGE_AUTH_URL")));
+        // In-process Apply fallback (tests without CoreUrl): registry, forwards,
+        // process relay, revoke. Empty on façades in the AppHost loop — sends
+        // and splices run on Core.
         builder.Services.AddSingleton<RunnerEventSink>();
         builder.Services.AddLandbridgeForwarding();
-        builder.Services.AddSingleton(new SessionEventListener(connectionString));
+        return builder;
+    }
+
+    /// <summary>
+    /// Dispatch's dedicated LISTEN. Core only — a façade that held this
+    /// would not run dispatch, and a second listener is a wasted connection.
+    /// </summary>
+    public static WebApplicationBuilder AddDispatchListener(this WebApplicationBuilder builder)
+    {
+        builder.Services.AddSingleton(new SessionEventListener(ConnectionString(builder.Configuration)));
+        return builder;
+    }
+
+    /// <summary>
+    /// Inbox fanout for MCP tool constructors. <paramref name="listen"/> opens
+    /// the Postgres LISTEN; leave it false when Hub is the doorbell.
+    /// </summary>
+    public static WebApplicationBuilder AddInboxFanout(this WebApplicationBuilder builder, bool listen)
+    {
+        var connectionString = ConnectionString(builder.Configuration);
         builder.Services.AddSingleton(sp => new SessionEventFanout(
             connectionString, sp.GetRequiredService<ILogger<SessionEventFanout>>()));
-        builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionEventFanout>());
+        if (listen)
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionEventFanout>());
         return builder;
     }
 
@@ -89,6 +117,17 @@ public static class PlaneHost
         services.AddHttpClient<HubClient>((sp, client) =>
         {
             var url = sp.GetRequiredService<IConfiguration>()["Landbridge:HubUrl"];
+            if (!string.IsNullOrWhiteSpace(url))
+                client.BaseAddress = new Uri(url.TrimEnd('/') + "/");
+        });
+        return services;
+    }
+
+    public static IServiceCollection AddLandbridgeCoreWrite(this IServiceCollection services)
+    {
+        services.AddHttpClient<CoreWriteClient>((sp, client) =>
+        {
+            var url = sp.GetRequiredService<IConfiguration>()["Landbridge:CoreUrl"];
             if (!string.IsNullOrWhiteSpace(url))
                 client.BaseAddress = new Uri(url.TrimEnd('/') + "/");
         });

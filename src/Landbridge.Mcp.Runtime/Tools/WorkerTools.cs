@@ -4,9 +4,11 @@ using System.Text.Json.Serialization;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using static Landbridge.Mcp.Tools.ToolResults;
@@ -83,26 +85,16 @@ public sealed class WorkerTools(
                  "report when you are waiting for a follow-up.")]
     public async Task<WorkerInboxView> WatchInbox(CancellationToken ct)
     {
-        if (inbox is null)
-            throw new McpException("the inbox feed is not available in this process.");
         var caller = Caller;
-        using var sub = inbox.Subscribe(caller.Session.Value);
-        var snap = await store.GetWorkerInboxAsync(caller, ct)
-            ?? throw new McpException(
-                "no assignment for this credential: the session is gone, or you are no longer its " +
-                "incumbent worker (it was parked, failed, or handed to a successor).");
-        if (snap.Items.Count > 0)
-            return snap;
-        await foreach (var _ in sub.Reader.ReadAllAsync(ct))
+        var hub = http.HttpContext?.RequestServices?.GetService<HubClient>();
+        await foreach (var snap in InboxWatch.Worker(store, hub, InboundBearer, inbox, caller, ct))
         {
-            snap = await store.GetWorkerInboxAsync(caller, ct)
-                ?? throw new McpException(
-                    "no assignment for this credential: the session is gone, or you are no longer its " +
-                    "incumbent worker (it was parked, failed, or handed to a successor).");
             if (snap.Items.Count > 0)
                 return snap;
         }
-        return snap;
+        throw new McpException(
+            "no assignment for this credential: the session is gone, or you are no longer its " +
+            "incumbent worker (it was parked, failed, or handed to a successor).");
     }
 
     [McpServerTool(Name = "report_result"),
@@ -123,6 +115,12 @@ public sealed class WorkerTools(
         CancellationToken ct = default)
     {
         var caller = Caller;
+        if (await QueueWaitAsync(CommandRow.Report,
+                new CommandPayload(ResultReference: resultReference, Report: report), ct) is { } queued)
+            return queued.Describe();
+        if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/report",
+                new CoreSessionBody("", ResultReference: resultReference, Report: report), ct) is { } viaCore)
+            return viaCore.Describe();
         return Describe(await store.ApplyAsync(caller.Session, new ReportResult(caller, resultReference, report), ct));
     }
 
@@ -150,6 +148,12 @@ public sealed class WorkerTools(
                 $"unknown input kind '{kind}'; expected one of: {string.Join(", ", Enum.GetNames<InputRequestKind>())}");
 
         var caller = Caller;
+        if (await QueueWaitAsync(CommandRow.Ask,
+                new CommandPayload(Kind: kind, Text: question), ct) is { } queued)
+            return queued.Describe();
+        if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/ask",
+                new CoreSessionBody("", Kind: kind, Text: question), ct) is { } viaCore)
+            return viaCore.Describe();
         return Describe(await store.ApplyAsync(caller.Session, new RequestInput(caller, parsed, question), ct));
     }
 
@@ -190,6 +194,26 @@ public sealed class WorkerTools(
         CancellationToken ct = default)
     {
         var caller = Caller;
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreProcessStartReply>("/core/v1/processes/start", bearer,
+                new CoreProcessStartBody(name, spawn, workingDirectory, env, openStdin), ct);
+            if (via is not null)
+            {
+                if (!via.Started)
+                    return new StartProcessResult(false, null, via.Refusal, null);
+                var hint =
+                    "Landbridge does not track this process's port. If other sessions need to reach it, call " +
+                    "register_service with the name and the port it bound. Read its output at the log " +
+                    $"path, and stop it with stop_process when the work is done — nothing stops it for you." +
+                    (openStdin
+                        ? " Stdin is open, so you can write_process to it and stop_process can stop it gracefully."
+                        : " Started without stdin (the default): write_process will refuse, and stopping it is a hard stop. Restart it with openStdin true if you need to talk to it.");
+                return new StartProcessResult(true, via.LogPath, null, hint);
+            }
+        }
+
         var result = await processes.StartAsync(
             caller.Session, name, spawn, workingDirectory, env, openStdin, ct);
 
@@ -220,6 +244,14 @@ public sealed class WorkerTools(
         [Description("The name the process was started with.")] string name,
         CancellationToken ct = default)
     {
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreProcessActionReply>("/core/v1/processes/stop", bearer,
+                new CoreProcessBody(name), ct);
+            if (via is not null)
+                return new ProcessActionResult(via.Ok, via.Refusal, via.Value);
+        }
         var r = await processes.StopAsync(Caller.Session, name, ct);
         return new ProcessActionResult(r.Ok, r.Refusal, r.Value);
     }
@@ -229,8 +261,66 @@ public sealed class WorkerTools(
                  "a name that is not taken, to work out why a start was refused, and above all to find " +
                  "out what an earlier session left running when you have been sent to clean up. Any " +
                  "session on the machine may stop a process.")]
-    public Task<IReadOnlyList<RunningThing>> ListProcesses(CancellationToken ct) =>
-        processes.ListAsync(Caller.Session, ct);
+    public async Task<IReadOnlyList<RunningThing>> ListProcesses(CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<HubClient>() is { Enabled: true } hub
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var session = await hub.GetAsync<HubSessionDocument>(
+                $"/sessions/{Caller.Session.Value:D}", bearer, ct);
+            var machineId = session?.Instances
+                .FirstOrDefault(i => i.Id == session.CurrentInstanceId)?.MachineId
+                ?? session?.Instances.LastOrDefault(i => !i.Revoked)?.MachineId;
+            if (machineId is { } mid)
+            {
+                var procs = await hub.GetAsync<List<HubProcessDocument>>(
+                    $"/machines/{mid:D}/processes", bearer, ct);
+                if (procs is not null)
+                    return procs.Select(p => new RunningThing(
+                        p.Name, p.State.ToLowerInvariant(), p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen))
+                        .ToList();
+            }
+        }
+
+        return await processes.ListAsync(Caller.Session, ct);
+    }
+
+    private string? InboundBearer
+    {
+        get
+        {
+            var header = http.HttpContext?.Request.Headers.Authorization.ToString();
+            const string prefix = "Bearer ";
+            return header is { Length: > 0 } && header.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? header[prefix.Length..].Trim()
+                : null;
+        }
+    }
+
+    private async Task<CoreStoreReply?> CorePostAsync<T>(string path, T body, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is not { Enabled: true } core
+            || InboundBearer is not { Length: > 0 } bearer)
+            return null;
+        var prefer = http.HttpContext?.Request.Headers["Prefer"].ToString();
+        return await core.PostAsync(path, bearer, body, ct, prefer);
+    }
+
+    private async Task<CoreStoreReply?> QueueWaitAsync(string kind, object payload, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<CommandQueue>() is not { Enabled: true } queue)
+            return null;
+        var caller = Caller;
+        var body = payload is CommandPayload p
+            ? p with { InstanceId = caller.Instance.Value }
+            : payload;
+        var row = http.HttpContext is { } ctx && PreferHeader.WantsRespondAsync(ctx.Request)
+            ? await queue.EnqueueAsync(
+                CommandRow.WorkerActor, caller.Session.Value, caller.Team.Value, caller.Session.Value, kind, body, ct)
+            : await queue.EnqueueAndWaitAsync(
+                CommandRow.WorkerActor, caller.Session.Value, caller.Team.Value, caller.Session.Value, kind, body, ct);
+        return CoreStoreReply.FromCommand(row);
+    }
 
 
     [McpServerTool(Name = "write_process"),
@@ -249,6 +339,14 @@ public sealed class WorkerTools(
         bool appendNewline = true,
         CancellationToken ct = default)
     {
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreProcessActionReply>("/core/v1/processes/write", bearer,
+                new CoreProcessBody(name, data, appendNewline), ct);
+            if (via is not null)
+                return new ProcessActionResult(via.Ok, via.Refusal, via.Value);
+        }
         var r = await processes.WriteAsync(Caller.Session, name, data, appendNewline, ct);
         return new ProcessActionResult(r.Ok, r.Refusal, r.Value);
     }
@@ -265,6 +363,12 @@ public sealed class WorkerTools(
         CancellationToken ct)
     {
         var caller = Caller;
+        if (await QueueWaitAsync(CommandRow.RegisterService,
+                new CommandPayload(Name: name, Port: port), ct) is { } queued)
+            return queued.Describe();
+        if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/services",
+                new CoreSessionBody("", Name: name, Port: port), ct) is { } viaCore)
+            return viaCore.Describe();
         return Describe(await store.RegisterServiceAsync(caller, name, port, ct));
     }
 
@@ -281,6 +385,17 @@ public sealed class WorkerTools(
         CancellationToken ct)
     {
         var caller = Caller;
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreForwardReply>("/core/v1/forwards", bearer,
+                new CoreForwardBody(serviceName), ct);
+            if (via is { Ok: true, Host: { } host, Port: { } port, ForwardId: { } fid, ExpiresAt: { } exp })
+                return new OpenForwardResult(host, port, fid, exp);
+            throw new McpException(via?.Rule is { } rule
+                ? $"rejected ({rule}): {via.Reason}"
+                : $"open_forward failed: {via?.Reason}");
+        }
 
         // 1. Issue the grant (authority gates: §9 check 11, Team scoping §8.2).
         var issued = await grants.IssueAsync(caller, serviceName, ct) switch
@@ -325,6 +440,15 @@ public sealed class WorkerTools(
         CancellationToken ct = default)
     {
         var caller = Caller;
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CorePreviewReply>("/core/v1/previews", bearer,
+                new CorePreviewMintBody(serviceName, isPublic, ttlMinutes), ct);
+            if (via is { Ok: true, Url: { } url, Auth: { } auth, ExpiresAt: { } exp })
+                return new OpenPreviewResult(url, auth, exp);
+            throw new McpException(via?.Reason ?? "open_preview refused");
+        }
         var policy = isPublic ? PreviewAuthPolicy.Public : PreviewAuthPolicy.Gated;
         var ttl = PreviewMint.ResolveTtl(policy, ttlMinutes);
 

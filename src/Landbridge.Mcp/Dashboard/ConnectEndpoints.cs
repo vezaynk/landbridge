@@ -45,30 +45,38 @@ internal static class ConnectEndpoints
         return DispatchService.DefaultPublicMcpUrl;
     }
 
-    public static object Guide(string mcpUrl) => new
+    public static object Guide(string mcpUrl, HttpContext? http = null, OAuthServerConfig? oauth = null)
     {
-        mcpUrl,
-        oauthAuthorize = $"{mcpUrl}/oauth/authorize",
-        oauthToken = $"{mcpUrl}/oauth/token",
-        protectedResource = $"{mcpUrl}/.well-known/oauth-protected-resource",
-        authorizationServer = $"{mcpUrl}/.well-known/oauth-authorization-server",
-        enroll = $"{mcpUrl}/enroll",
-        enrollmentTtlMinutes = (int)TokenService.EnrollmentTtl.TotalMinutes,
-        leadSkill = "landbridge://skills/lead",
-        enrollSkill = "landbridge://skills/enroll",
-        runnerConfigSkill = "landbridge://skills/runner-config",
-        leadTokenIsFactory = true,
-        createTeam = "create_team",
-        teamIdRequiredExcept = new[] { "create_team", "list_profiles" },
-        doNotWriteTeamId = true,
-        posts = new
+        var plane = http is not null
+            ? $"{http.Request.Scheme}://{http.Request.Host}".TrimEnd('/')
+            : mcpUrl;
+        var issuer = oauth?.Issuer ?? plane;
+        return new
         {
-            enrollToken = "/dashboard/connect/enroll-token",
-            claimLead = "/dashboard/connect/claim",
-            setupLink = "/dashboard/connect/setup-link",
-        },
-        setupPath = "/setup/{code}",
-    };
+            mcpUrl,
+            oauthAuthorize = $"{issuer}/oauth/authorize",
+            oauthToken = $"{issuer}/oauth/token",
+            protectedResource = oauth?.ResourceMetadataUri ?? $"{mcpUrl}/.well-known/oauth-protected-resource",
+            authorizationServer = oauth?.AuthorizationServerMetadataUri
+                ?? $"{issuer}/.well-known/oauth-authorization-server",
+            enroll = $"{issuer}/enroll",
+            enrollmentTtlMinutes = (int)TokenService.EnrollmentTtl.TotalMinutes,
+            leadSkill = "landbridge://skills/lead",
+            enrollSkill = "landbridge://skills/enroll",
+            runnerConfigSkill = "landbridge://skills/runner-config",
+            leadTokenIsFactory = true,
+            createTeam = "create_team",
+            teamIdRequiredExcept = new[] { "create_team", "list_profiles" },
+            doNotWriteTeamId = true,
+            posts = new
+            {
+                enrollToken = "/dashboard/connect/enroll-token",
+                claimLead = "/dashboard/connect/claim",
+                setupLink = "/dashboard/connect/setup-link",
+            },
+            setupPath = "/setup/{code}",
+        };
+    }
 
     /// <summary>
     /// POST /dashboard/connect/enroll-token — mint a single-use 15-minute

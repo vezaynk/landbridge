@@ -6,14 +6,15 @@ using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Landbridge.Mcp.Auth;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Landbridge.Mcp;
 
 /// <summary>
 /// Lead-only HTTP inbox: one JSON snapshot and one SSE feed of the same
 /// snapshot. <c>?teamId=</c> is required (a Team this factory owns). Wakes on
-/// session NOTIFY via <see cref="SessionEventFanout"/>; each event is a full
-/// Team snapshot, not a delta. Team-wide is identifiers only;
+/// Hub SSE when configured, otherwise <see cref="SessionEventFanout"/>. Each
+/// event is a full Team snapshot, not a delta. Team-wide is identifiers only;
 /// <c>?sessionId=</c> (repeatable) carries bodies and marks unread report mail
 /// as read.
 /// </summary>
@@ -48,7 +49,17 @@ public static class LeadInboxEndpoints
             return Results.Json(new { error = "teamId is required: a team id from create_team, or one a human gave you" },
                 statusCode: StatusCodes.Status400BadRequest);
         var actor = filter is { Count: > 0 } ? new Landbridge.Core.LeadClaim(team.Value) : (Landbridge.Core.Actor?)null;
-        var inbox = await store.GetLeadInboxAsync(team.Value, filter, ct, actor);
+        var hub = http.RequestServices.GetService<HubClient>();
+        var bearer = HubClient.BearerOf(http);
+        LeadInboxView inbox;
+        if (filter is not { Count: > 0 }
+            && hub is { Enabled: true }
+            && bearer is { Length: > 0 }
+            && await hub.GetAsync<List<HubSessionListItem>>(
+                $"/sessions?teamId={Uri.EscapeDataString(http.Request.Query["teamId"].ToString())}", bearer, ct) is { } rows)
+            inbox = HubPackager.InboxIdentifiers(rows);
+        else
+            inbox = await store.GetLeadInboxAsync(team.Value, filter, ct, actor);
         return Results.Json(inbox, Json);
     }
 
@@ -69,19 +80,26 @@ public static class LeadInboxEndpoints
                 statusCode: StatusCodes.Status400BadRequest);
         var actor = filter is { Count: > 0 } ? new LeadClaim(team.Value) : (Actor?)null;
         http.Response.Headers["X-Accel-Buffering"] = "no";
-        return TypedResults.ServerSentEvents(Enumerate(store, fanout, team.Value, filter, actor, ct));
+        var hub = http.RequestServices.GetService<HubClient>();
+        var bearer = HubClient.BearerOf(http);
+        var teamKey = http.Request.Query["teamId"].ToString();
+        return TypedResults.ServerSentEvents(
+            Enumerate(store, hub, bearer, fanout, team.Value, teamKey, filter, actor, ct));
     }
 
     private static async IAsyncEnumerable<SseItem<string>> Enumerate(
         SessionStore store,
+        HubClient? hub,
+        string? bearer,
         SessionEventFanout fanout,
         TeamId team,
+        string teamId,
         IReadOnlyList<Guid>? filter,
         Actor? actor,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        await using var snapshots = LeadInboxWatch
-            .Snapshots(store, fanout, team, filter, actor, ct)
+        await using var snapshots = InboxWatch
+            .Lead(store, hub, bearer, fanout, team, teamId, filter, actor, ct)
             .GetAsyncEnumerator(ct);
         var next = snapshots.MoveNextAsync().AsTask();
 

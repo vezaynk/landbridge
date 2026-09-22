@@ -39,8 +39,8 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 | Socket | `RunnerConnectionRegistry` | send delegate, tracked dispatches, generation. Facts are the columns. Test machines enroll a real `machines.id` |
 
 | Dispatch / inbox wake | `SessionEventListener` / `SessionEventFanout` | LISTEN `landbridge_session_events` only |
-| Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | full **snapshot** on wake, still in Core ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
-| Dashboard live read | Blazor `DashboardRefresh` | **still 2s poll**. Hub has no consumer yet |
+| Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | snapshot on Hub SSE wake; mark-read still a write ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
+| Dashboard live read | Hub membership SSE → GET twins | circuit holds `/sessions/events` etc.; 2s poll is gone |
 | Hub | `Landbridge.Hub` `:5300` loopback | LISTEN, tail `hub_queue`, JSON twins, Bearer. Retention `DELETE` older than `Hub:Retain` (24h) |
 | Runner channel | `/runner` WebSocket | frozen §10; unchanged |
 
@@ -86,7 +86,7 @@ v1 of the MCP hosts may still `Apply` in-process against the same Postgres (toda
 
 ## Problem
 
-1. The §12 board polls every 2s.
+1. The §12 board used to poll every 2s; it now refetches on Hub SSE.
 2. Lead inbox SSE already does wake + snapshot but **in Core**, so those sockets die with Core.
 3. A dashboard that is only `EventSource` + `GET` should survive Core death: pings keep flowing, committed rows are still readable. That requires the Blazor circuit **not** to live in Core — Dashboard is its own process.
 
@@ -250,7 +250,7 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 Dashboard is its own process, a Hub client like LeadMCP/WorkerMCP. The browser talks to Dashboard (cookie). Dashboard talks to Hub (Bearer copied from the cookie). Hub stays loopback.
 
 - Live (target): Dashboard holds EventSource per membership list + per visible row against Hub. Core death does not drop the circuit.
-- Live (today): 2s poll inside fused `Landbridge.Mcp`.
+- Live: Dashboard circuit subscribes to Hub membership SSE (`event: change`) and refetches JSON twins. No timer.
 - At-rest / click: Dashboard `GET`s Hub JSON twins. Cookie POSTs (revoke, preview, permission) go to Core.
 - Core 502 during restart: retry mutation; **do not** tear down Hub SSE. Committed session state did not change. Machine rail follows `last_spoke_at`.
 
@@ -263,7 +263,7 @@ Dashboard is its own process, a Hub client like LeadMCP/WorkerMCP. The browser t
 3c. **LeadMCP + WorkerMCP + Dashboard** — three Hub clients. Core keeps `/runner`, dispatch, `Apply`. (Credential issuance left ahead of them — the OAuth AS and the machine bootstrap, both in `Landbridge.Auth`.)
 4. Hub session list/document fields those hosts need (occupancy-complete membership, remaining last-value columns, worker-scoped processes). Dashboard composes the board; Hub does not serve `GetObservabilityAsync`.
 5. Dashboard process: Blazor circuit EventSource → Hub (server-side Bearer). Cookie POSTs → Core.
-6. Inbox **watch** on the MCP hosts via Hub SSE + GET. Mark-read / `PullReceipt` stay writes.
+6. Inbox **watch** on the MCP hosts via Hub SSE + GET — done. Mark-read / `PullReceipt` stay writes. Fanout remains the test-host path when Hub is unset.
 7. Part 2: MCP hosts stop calling `Apply`; accept queue on Core.
 
 
@@ -281,7 +281,7 @@ Hub stays **nouns**. Anything that repackages those nouns into a Lead or worker 
 | Reads | Hub → tool JSON | Hub → tool JSON | Hub → board | last-value rows + wakes | nothing long-lived |
 | Inboxes | team-wide flags; **watch** | `get_session`; **watch** | human inbox compose | session list / document | mark-read / `PullReceipt` |
 | Skills / UI | lead skill | worker skill | Blazor | — | — |
-| Writes | 202/accept → Core; `Apply` until Part 2 | same | cookie POST → Core | no | `Apply` |
+| Writes | `POST /core/v1` Bearer (sync Apply); in-process when CoreUrl unset | same | cookie POST + circuit → Core | no | `Apply` |
 
 Shared MCP resources are **not** one bundle. Each host ships its skill. What they share is Hub (and later Core's accept endpoint). MCP Tasks is a LeadMCP projection of Hub session rows, not a Hub route.
 
@@ -305,10 +305,16 @@ Each PR's base is the previous branch.
 
 1. **This doc** (on Hub JSON twins).
 2. **Hub read shapes** those hosts need + `live` = last-spoke only + `HubClient` 5xx → null. Revert fused `list_profiles` off Hub until LeadMCP exists (or filter to `live`).
-3. **LeadMCP host** — `Landbridge.LeadMcp`: Lead tools, lead skill, lead inbox HTTP. Hub for reads; `SessionStore` writes until Part 2. No `DispatchService`, no `/runner`.
-4. **WorkerMCP host** — `Landbridge.WorkerMcp`: worker tools, worker skill. Same write rule. Point `WorkerMcpUrl` here.
-5. **Dashboard host** — `Landbridge.Dashboard`: Blazor Server, operator cookie, Hub GET + EventSource. Cookie POSTs proxy to Core. No `Apply`, no MCP.
-6. **Strip** Lead/worker MCP and `/dashboard` from Core. Core is `/runner` + dispatch + `Apply` + mutation HTTP the other hosts call.
+3. **LeadMCP / WorkerMCP hosts** — done.
+4. **Cutover** — `PublicMcpUrl` is LeadMCP, `WorkerMcpUrl` is WorkerMCP. Core no longer maps MCP tools or the lead inbox. Enroll is Auth.
+5. **Dashboard origin** — browser hits Dashboard; Core no longer maps `/dashboard`. Cookie POSTs and fleet-board circuit mutations POST to Core when `Landbridge:CoreUrl` is set.
+6. **Façade reads** — LeadMCP `list_profiles` / `get_team_state` / team-wide inbox identifiers, WorkerMCP `list_processes`, and the Dashboard board package Hub nouns (store fallback when Hub is unset). Per-session inbox fetch still writes. Event-log marks/tail and `LastProgress` are omitted on the Hub path.
+7. **Core writes** — `POST /core/v1/*` is sync Apply on Core (registry sends included). Façades forward Bearer when `Landbridge:CoreUrl` is set. Not the 202 queue yet.
+8. **Inbox watch** — `watch_lead_inbox` / `watch_inbox` / `GET /lead/inbox/events` wake on Hub SSE, then GET. Mark-read / `PullReceipt` stay writes. Fanout when Hub is unset.
+9. **Thin PlaneHost** — `AddPlane` is store + auth + in-process Apply collaborators. Dispatch LISTEN is Core-only. Inbox fanout LISTEN is MCP-only when Hub is unset. Dashboard never LISTENs.
+10. **Write queue** — `command_queue` + Core SKIP LOCKED drain. MCP hosts enqueue when `Landbridge:WriteQueue` is set and wait for Apply (today's return shape). Hub `GET /commands` is pending. Client-minted `create_session` ids are idempotent.
+11. **`Prefer: respond-async`** — RFC 7240. Default waits for Apply. The preference returns `202` + `Preference-Applied` with `commandId`; Hub `GET /commands/{id}` is the pending view. MCP tools honor the same inbound header.
+12. **Core** is `/runner` + dispatch + `Apply` + `/core/v1` + `/relay/validate` + `/preview/connect`.
 
 Do not stand up two hosts that each run dispatch. Dashboard must not `Apply`.
 
@@ -517,7 +523,7 @@ Ship Part 1 without Part 2. Ship client-minted session ids without Part 2. Do no
 
 1. Membership: `GET` the list on every `change` vs later adding `op`. v1 is GET.
 2. Mutating snapshot reads (`report_unread` cleared by per-session inbox fetch) — keep those writes on Core, even if Hub serves the unread view and LeadMCP/WorkerMCP watch Hub.
-3. MCP 202 vs optional wait-for-Apply timeout (sync default, 202 if `Prefer: respond-async`). Default sync preserves today's Lead loop.
+3. MCP 202 vs optional wait-for-Apply timeout — done: sync default, `Prefer: respond-async` → 202.
 4. Whether `fork_session` (when it exists) uses a client-minted child id the same way as create.
 5. Dual-stack duration for `/runner` WS vs SSE+POST.
 6. Whether `alive`/`tool-call` are last-value or still droppable once they are HTTP — bound the table either way.

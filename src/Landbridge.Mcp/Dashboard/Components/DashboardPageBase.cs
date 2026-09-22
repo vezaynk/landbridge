@@ -11,12 +11,11 @@ namespace Landbridge.Mcp.Dashboard.Components;
 /// <summary>
 /// Shared load + refresh + principal resolution for gated dashboard pages.
 /// Prerender paints a complete HTML document (tests and no-JS); a live circuit
-/// then ticks <see cref="AutoRefresh"/> pages every 2s. Status codes are written
-/// only while the HTTP response is still uncommitted.
+/// refetches on Hub SSE <c>event: change</c>. No timer.
 /// </summary>
 public abstract class DashboardPageBase : ComponentBase, IDisposable
 {
-    private readonly DashboardRefresh _refresh = new();
+    private readonly DashboardHubWake _wake = new();
     private readonly CancellationTokenSource _lifetime = new();
     private int _reloading;
     private int _queued;
@@ -47,6 +46,8 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
     /// refresh — the GET is already finished.
     /// </summary>
     protected CancellationToken RequestAborted => _lifetime.Token;
+
+    protected string? OperatorToken => _token;
 
     /// <summary>Passthrough GET to the internal hub. Null when Hub is unset or down.</summary>
     protected Task<T?> HubGetAsync<T>(string path) =>
@@ -85,7 +86,8 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
     {
         if (!firstRender || !AutoRefresh || RefuseReason is not null)
             return;
-        _refresh.Start(() => InvokeAsync(ReloadAsync));
+        if (Hub is { Enabled: true } && _token is { Length: > 0 } token)
+            _wake.Start(Hub, token, () => InvokeAsync(ReloadAsync), RequestAborted);
     }
 
     protected async Task ReloadAsync()
@@ -222,7 +224,7 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
             Nav.LocationChanged -= OnLocationChanged;
             _listening = false;
         }
-        _refresh.Dispose();
+        _wake.Dispose();
         _lifetime.Cancel();
         _lifetime.Dispose();
     }

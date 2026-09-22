@@ -32,7 +32,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
             s.State, s.OccupancyDesired, s.OccupancyObserved, s.Health, s.Hidden,
             s.MessageState, s.PendingSpawn, s.ReportUnread, s.MessageId, s.InputKind,
             s.BlockedAt, s.ParkMachine, s.CurrentInstanceId, s.MessageOpenedAt,
-            s.LastMessageClosedAt)).ToList();
+            s.LastMessageClosedAt, s.Namespace, s.Attempt,
+            s.WorkerReport != null, s.BlockedAt != null && s.InputKind != null,
+            s.ContinuesSessionId, s.CompletionProvenance,
+            s.InfrastructureRequeues, s.LastRequeueReason)).ToList();
     }
 
     public async Task<SessionDocument?> SessionAsync(Guid id, CancellationToken ct)
@@ -293,6 +296,30 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         }).ToList();
     }
 
+    public async Task<IReadOnlyList<CommandDocument>> CommandsAsync(
+        HubCaller caller, Guid? teamId, string? status, CancellationToken ct)
+    {
+        var q = db.Commands.AsNoTracking().AsQueryable();
+        if (caller.Principal is Principal.Worker)
+            q = q.Where(c => c.SessionId == caller.WorkerSession);
+        else if (caller.Teams is { } teams)
+            q = q.Where(c => teams.Contains(c.TeamId));
+        if (teamId is { } team)
+            q = q.Where(c => c.TeamId == team);
+        if (string.IsNullOrWhiteSpace(status) || status == "pending")
+            q = q.Where(c => c.Status == CommandRow.Queued || c.Status == CommandRow.Running);
+        else
+            q = q.Where(c => c.Status == status);
+        var rows = await q.OrderBy(c => c.AcceptedAt).Take(MaxLimit).ToListAsync(ct);
+        return rows.Select(ToCommand).ToList();
+    }
+
+    public async Task<CommandDocument?> CommandAsync(Guid id, CancellationToken ct)
+    {
+        var row = await db.Commands.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+        return row is null ? null : ToCommand(row);
+    }
+
     private async Task<Dictionary<Guid, string>> TeamSlugsAsync(IEnumerable<Guid> teamIds, CancellationToken ct)
     {
         var ids = teamIds.Distinct().ToArray();
@@ -314,6 +341,9 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
     private static ProcessDocument ToProcess(MachineProcessRow p) => new(
         p.Id, p.MachineId, p.Name, p.State, p.DeclaredBySession,
         p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen);
+
+    private static CommandDocument ToCommand(CommandRow c) => new(
+        c.Id, c.SessionId, c.TeamId, c.Kind, c.Status, c.Rule, c.Reason, c.Slug, c.AcceptedAt, c.AppliedAt);
 
     private static TeamDocument ToTeam(LeadTeamRow t, TeamForwardUsageRow? usage) => new(
         t.TeamId, t.Slug, t.LeadCredentialId, t.CreatedAt,

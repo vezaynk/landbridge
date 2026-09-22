@@ -23,7 +23,8 @@ public sealed record CreateSession(
     Actor Actor,
     TeamId Team,
     string Description,
-    string Profile) : SessionCommand(Actor);
+    string Profile,
+    SessionId? Id = null) : SessionCommand(Actor);
 
 /// <summary>
 /// submitted → working. The dispatch transaction is the claim (§6); the

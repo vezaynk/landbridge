@@ -86,7 +86,8 @@ else if (Ready)
 
     protected override async Task<string?> LoadAsync()
     {
-        List = await Queries.GetTeamsAsync(TeamScope, RequestAborted);
+        List = await DashboardHubBoard.TryTeamsAsync(Hub, OperatorToken ?? "", TeamScope, RequestAborted)
+            ?? await Queries.GetTeamsAsync(TeamScope, RequestAborted);
         return null;
     }
 }

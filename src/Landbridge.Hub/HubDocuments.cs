@@ -26,7 +26,15 @@ public sealed record SessionListItem(
     Guid? ParkMachine,
     Guid? CurrentInstanceId,
     DateTimeOffset? MessageOpenedAt,
-    DateTimeOffset? LastMessageClosedAt);
+    DateTimeOffset? LastMessageClosedAt,
+    string Namespace,
+    int Attempt,
+    bool HasReport,
+    bool HasQuestion,
+    Guid? ContinuesSessionId,
+    VerdictProvenance? CompletionProvenance,
+    int InfrastructureRequeues,
+    LivenessLossReason? LastRequeueReason);
 
 public sealed record SessionDocument(
     Guid Id,
@@ -199,6 +207,18 @@ public sealed record InstanceDocument(
     bool Revoked,
     DateTimeOffset CreatedAt,
     Guid? MachineId);
+
+public sealed record CommandDocument(
+    Guid Id,
+    Guid SessionId,
+    Guid TeamId,
+    string Kind,
+    string Status,
+    string? Rule,
+    string? Reason,
+    string? Slug,
+    DateTimeOffset AcceptedAt,
+    DateTimeOffset? AppliedAt);
 
 public sealed record UsageDocument(
     Guid SessionId,

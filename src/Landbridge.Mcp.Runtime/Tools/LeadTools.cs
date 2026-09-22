@@ -3,9 +3,11 @@ using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using static Landbridge.Mcp.Tools.ToolResults;
@@ -25,8 +27,8 @@ namespace Landbridge.Mcp.Tools;
 /// for review, disposition for cancel), so nothing here interprets session content.
 ///
 /// <para><c>list_profiles</c> is the one tool with no Team in it: a declared
-/// runner profile is machine config no Team owns. It reads last-value machine
-/// rows through <see cref="MachineLive"/>.
+/// runner profile is machine config no Team owns. It reads Hub <c>/machines</c>
+/// (live last-spoke) when Hub is configured, otherwise <see cref="MachineLive"/>.
 /// The Lead-principal check at its top is the whole of its authority.</para>
 ///
 /// <para>The last three tools are the §8.3 <b>human path</b>: a Lead binds an
@@ -56,6 +58,49 @@ public sealed class LeadTools(
     /// rather than a bare authorization error, so the displaced session's harness
     /// does not invent an explanation for the denial.
     /// </summary>
+    private string? InboundBearer
+    {
+        get
+        {
+            var header = http.HttpContext?.Request.Headers.Authorization.ToString();
+            const string prefix = "Bearer ";
+            return header is { Length: > 0 } && header.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? header[prefix.Length..].Trim()
+                : null;
+        }
+    }
+
+    private async Task<T?> HubGetAsync<T>(string path, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<HubClient>() is not { Enabled: true } hub
+            || InboundBearer is not { Length: > 0 } bearer)
+            return default;
+        return await hub.GetAsync<T>(path, bearer, ct);
+    }
+
+    private async Task<CoreStoreReply?> CorePostAsync<T>(string path, T body, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is not { Enabled: true } core
+            || InboundBearer is not { Length: > 0 } bearer)
+            return null;
+        var prefer = http.HttpContext?.Request.Headers["Prefer"].ToString();
+        return await core.PostAsync(path, bearer, body, ct, prefer);
+    }
+
+    private async Task<CoreStoreReply?> QueueWaitAsync(
+        Guid teamId, Guid sessionId, string kind, object payload, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<CommandQueue>() is not { Enabled: true } queue)
+            return null;
+        var lead = LeadPrincipal;
+        var row = http.HttpContext is { } ctx && PreferHeader.WantsRespondAsync(ctx.Request)
+            ? await queue.EnqueueAsync(
+                CommandRow.LeadActor, lead.CredentialId, teamId, sessionId, kind, payload, ct)
+            : await queue.EnqueueAndWaitAsync(
+                CommandRow.LeadActor, lead.CredentialId, teamId, sessionId, kind, payload, ct);
+        return CoreStoreReply.FromCommand(row);
+    }
+
     private Principal.Lead LeadPrincipal
     {
         get
@@ -102,6 +147,8 @@ public sealed class LeadTools(
                  "token from sharing a Team. There is no list of Teams.")]
     public async Task<string> CreateTeam(CancellationToken ct = default)
     {
+        if (await CorePostAsync("/core/v1/create-team", new { }, ct) is { } viaCore)
+            return viaCore.Slug ?? viaCore.Describe();
         var team = await tokens.CreateTeamAsync(LeadPrincipal.CredentialId, ct);
         return await ids.TeamAsync(team.Value, ct);
     }
@@ -129,8 +176,15 @@ public sealed class LeadTools(
             throw new McpException("profile is required; call list_profiles and pass an exact name.");
 
         var lead = await LeadOn(teamId, ct);
+        var sessionId = SessionId.New();
+        if (await QueueWaitAsync(lead.Team.Value, sessionId.Value, CommandRow.CreateSession,
+                new CommandPayload(description, profile.Trim()), ct) is { } queued)
+            return queued.Slug ?? queued.Describe();
+        if (await CorePostAsync("/core/v1/create-session",
+                new CoreCreateSessionBody(teamId, description, profile.Trim(), sessionId.Value.ToString("D")), ct) is { } viaCore)
+            return viaCore.Slug ?? viaCore.Describe();
         var result = await store.CreateAsync(
-            new CreateSession(lead, lead.Team, description, profile.Trim()), ct);
+            new CreateSession(lead, lead.Team, description, profile.Trim(), sessionId), ct);
 
         return result switch
         {
@@ -160,6 +214,12 @@ public sealed class LeadTools(
         var ttl = ResolveStopTtl(ttlSeconds);
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.StopSession,
+                new CommandPayload(TtlSeconds: ttlSeconds), ct) is { } queued)
+            return queued.Describe();
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/stop",
+                new CoreSessionBody(teamId, TtlSeconds: ttlSeconds), ct) is { } viaCore)
+            return viaCore.Describe();
         var machine = registry.MachineFor(id);
         var applied = await store.ApplyAsync(id, new Landbridge.Core.StopSession(lead), ct);
         if (applied is StoreResult.Applied ok
@@ -196,6 +256,15 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.ParkSession, new CommandPayload(), ct) is { } queued)
+            return queued.Status is "applied" or "accepted"
+                ? queued.Describe()
+                : queued.Reason ?? "this task is not tracked on any machine, so it cannot be parked";
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/park",
+                new CoreSessionBody(teamId), ct) is { } viaCore)
+            return viaCore.Status == "applied"
+                ? viaCore.Describe()
+                : viaCore.Reason ?? "this task is not tracked on any machine, so it cannot be parked";
         var machine = registry.MachineFor(id);
         // Park records where the task ran. Without a tracked machine there is nothing
         // truthful to write, so the park is refused rather than recorded against a
@@ -234,6 +303,12 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.InputResponse,
+                new CommandPayload(Answer: answer), ct) is { } queued)
+            return queued.Describe();
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/input-response",
+                new CoreSessionBody(teamId, Answer: answer), ct) is { } viaCore)
+            return viaCore.Describe();
         var machine = registry.MachineFor(id);
         var live = registry.HasLiveProcess(id);
         var result = await store.SendInputResponseAsync(lead, id, machine, answer, live, ct);
@@ -260,6 +335,12 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.InputRequest,
+                new CommandPayload(Text: text), ct) is { } queued)
+            return queued.Describe();
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/input-request",
+                new CoreSessionBody(teamId, Text: text), ct) is { } viaCore)
+            return viaCore.Describe();
         var machine = registry.MachineFor(id);
         var live = registry.HasLiveProcess(id);
         var result = await store.SendInputRequestAsync(lead, id, machine, text, live, ct);
@@ -315,6 +396,12 @@ public sealed class LeadTools(
         // holding its own tool call open, so there is nothing to redispatch and no transcript
         // to resume (§11). Escalation is enforced on the row inside the store, so a Lead
         // answering one it already handed over is refused there rather than here.
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.Permission,
+                new CommandPayload(Option: option.Trim(), Message: message), ct) is { } queued)
+            return queued.Describe();
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/permission",
+                new CoreSessionBody(teamId, Option: option.Trim(), Message: message), ct) is { } viaCore)
+            return viaCore.Describe();
         return Describe(await store.AnswerPermissionAsync(lead, id, option.Trim(), message, ct));
     }
 
@@ -336,6 +423,10 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var filter = await SessionFilterAsync(sessionId, sessionIds, ct);
+        if (filter is not { Count: > 0 }
+            && await HubGetAsync<List<HubSessionListItem>>($"/sessions?teamId={Uri.EscapeDataString(teamId)}", ct)
+                is { } rows)
+            return HubPackager.InboxIdentifiers(rows);
         return await store.GetLeadInboxAsync(lead.Team, filter, ct, filter is { Count: > 0 } ? lead : null);
     }
 
@@ -354,12 +445,12 @@ public sealed class LeadTools(
         CancellationToken ct = default,
         [Description("Optional: these sessions' outstanding items, with bodies.")] string[]? sessionIds = null)
     {
-        if (inbox is null)
-            throw new McpException("the inbox feed is not available in this process.");
         var lead = await LeadOn(teamId, ct);
         var filter = await SessionFilterAsync(sessionId, sessionIds, ct);
         var actor = filter is { Count: > 0 } ? lead : (Actor?)null;
-        await foreach (var snapshot in LeadInboxWatch.Snapshots(store, inbox, lead.Team, filter, actor, ct))
+        var hub = http.HttpContext?.RequestServices?.GetService<HubClient>();
+        await foreach (var snapshot in InboxWatch.Lead(
+            store, hub, InboundBearer, inbox, lead.Team, teamId, filter, actor, ct))
         {
             if (snapshot.Items.Count > 0)
                 return snapshot;
@@ -382,7 +473,11 @@ public sealed class LeadTools(
     {
         var actor = await LeadOn(teamId, ct);
         var lead = LeadPrincipal;
-        var state = await store.GetTeamStateAsync(actor.Team, ct);
+        var state = await HubGetAsync<List<HubSessionListItem>>(
+                $"/sessions?teamId={Uri.EscapeDataString(teamId)}&hidden=true", ct)
+            is { } rows
+            ? HubPackager.TeamState(teamId, rows)
+            : await store.GetTeamStateAsync(actor.Team, ct);
         // The binding keys on the human, not the Team, so it is composed on here
         // rather than read out of the Team's rows (§8.3 human path). A lead
         // credential with no human attribution simply shows no binding.
@@ -409,6 +504,8 @@ public sealed class LeadTools(
     public async Task<ProfileRoutingView> ListProfiles(CancellationToken ct)
     {
         _ = LeadPrincipal;
+        if (await HubGetAsync<List<HubMachine>>("/machines", ct) is { } machines)
+            return HubPackager.Profiles(machines);
 
         var view = await MachineLive.RoutingAsync(
             db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, ct);
@@ -451,6 +548,9 @@ public sealed class LeadTools(
         var id = await ids.TryMachineAsync(machineId, ct)
             ?? throw new McpException($"'{machineId}' is not a valid machine id.");
 
+        if (await CorePostAsync("/core/v1/bind-machine", new CoreBindBody(machineId), ct) is { } viaCore)
+            return viaCore.Describe();
+
         return await bindings.BindAsync(human, id, ct) switch
         {
             LeadMachineBindResult.Bound b =>
@@ -472,6 +572,8 @@ public sealed class LeadTools(
         CancellationToken ct)
     {
         _ = await LeadOn(teamId, ct);
+        if (await CorePostAsync("/core/v1/unbind-machine", new { }, ct) is { } viaCore)
+            return viaCore.Describe();
         var released = await bindings.UnbindAsync(HumanOf(LeadPrincipal), ct);
         return released is null
             ? "ok: you had no machine bound; nothing to release."
@@ -499,6 +601,26 @@ public sealed class LeadTools(
         var actor = await LeadOn(teamId, ct);
         var lead = LeadPrincipal;
         var human = HumanOf(lead);
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var via = await core.PostAsAsync<CoreForwardReply>("/core/v1/forwards/lead", bearer,
+                new CoreForwardBody(serviceName, teamId), ct);
+            if (via is { Ok: true, Host: { } host, Port: { } port, ForwardId: { } fid, ExpiresAt: { } exp })
+                return new OpenForwardResult(host, port, fid, exp);
+            var why = via?.Reason;
+            throw new McpException(
+                why == "no machine bound"
+                    ? "you have no machine bound, so there is nowhere to open a local port. Three steps: " +
+                      "install and enroll landbridged on the machine your human is sitting at, " +
+                      "GET http://127.0.0.1:19378 for that box's machine id, bind_machine with it, then call " +
+                      "open_lead_forward again. " +
+                      "If the service speaks HTTP, its worker can mint a browser preview URL with open_preview " +
+                      "instead — that needs no landbridged on your human's side."
+                    : via?.Rule is { } rule
+                        ? $"rejected ({rule}): {why}"
+                        : $"open_lead_forward failed: {why}");
+        }
 
         // 1. Where does this person sit? Nothing infers it — the binding is the only
         // answer, and its absence is a first-class, actionable refusal (§8.3).

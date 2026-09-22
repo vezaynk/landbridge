@@ -39,10 +39,14 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     private readonly List<string> _timeline = new();
 
     private ChaosProcess? _plane;
+    private ChaosProcess? _leadMcp;
+    private ChaosProcess? _workerMcp;
     private ChaosProcess? _landbridged;
     private HttpClient _http = null!;
 
     private string _planeUrl = null!;
+    private string _leadMcpUrl = null!;
+    private string _workerMcpUrl = null!;
     private string _workRoot = null!;
     private string _stateDir = null!;
     private string _configPath = null!;
@@ -103,6 +107,8 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         }
 
         _planeUrl = PlaneProbe.ReserveLoopbackUrl();
+        _leadMcpUrl = PlaneProbe.ReserveLoopbackUrl();
+        _workerMcpUrl = PlaneProbe.ReserveLoopbackUrl();
         await StartPlaneAsync(ct);
 
         _configPath = WriteLandbridgedConfig();
@@ -110,57 +116,77 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
 
     private async Task StartPlaneAsync(CancellationToken ct)
     {
-        var binary = ChaosBinaries.ControlPlane();
-        _plane = ChaosProcess.Start("plane", binary, [], new Dictionary<string, string>
+        var shared = new Dictionary<string, string>
         {
-            ["ASPNETCORE_URLS"] = _planeUrl,
-            // ServiceDefaults maps /health only in Development — that endpoint is this
-            // rig's readiness gate, exactly as it is the AppHost's.
             ["ASPNETCORE_ENVIRONMENT"] = "Development",
             ["ConnectionStrings__Landbridge"] = pg.ConnectionString,
-            // The URL the plane writes into every worker's injected mcp.json. Without
-            // this the workers would dial the 127.0.0.1:5050 default and never find us.
-            ["Landbridge__PublicMcpUrl"] = _planeUrl,
-            // The PostgresFixture already migrated; a second migrate would only race.
+            ["Landbridge__PublicMcpUrl"] = _leadMcpUrl,
+            ["Landbridge__WorkerMcpUrl"] = _workerMcpUrl,
+            ["Landbridge__AuthUrl"] = _leadMcpUrl,
             ["Landbridge__MigrateOnStartup"] = "false",
-            // §10 two-clock liveness, shrunk. Note PerTaskLivenessWindow doubles as the
-            // sweep PERIOD, and that these parse as TimeSpan — a bare number would mean
-            // DAYS, so they are always written out in full.
             ["Landbridge__PerTaskLivenessWindow"] = Fmt(options.PerTaskLivenessWindow),
             ["Landbridge__NoProgressCeiling"] = Fmt(options.NoProgressCeiling),
-            // Keep Landbridge's own categories verbose — the liveness warning is the only
-            // record of which clock reclaimed a task — but silence framework chatter.
-            // EF Core logs every dispatch query at Information, and the dispatch loop
-            // runs on every heartbeat, so at default levels the plane emits hundreds of
-            // SQL lines a minute: they bury the lines a scenario waits on and make the
-            // failure dump useless.
             ["Logging__LogLevel__Default"] = "Information",
             ["Logging__LogLevel__Microsoft"] = "Warning",
-        },
-        // A host's content root defaults to the CURRENT directory, so it has to run
-        // from its own bin or it would look for appsettings.json beside this test.
-        workingDirectory: Path.GetDirectoryName(binary));
+        };
 
+        _plane = StartHost("plane", ChaosBinaries.ControlPlane(), _planeUrl, shared, extra: new Dictionary<string, string>
+        {
+            ["Landbridge__PublicMcpUrl"] = _leadMcpUrl,
+            ["Landbridge__WorkerMcpUrl"] = _workerMcpUrl,
+        });
+        await WaitForHealthAsync("plane", _plane, _planeUrl, ct);
+
+        if (_leadMcp is null)
+        {
+            _leadMcp = StartHost("lead-mcp", ChaosBinaries.LeadMcp(), _leadMcpUrl, shared, extra: new Dictionary<string, string>
+            {
+                ["Landbridge__CoreUrl"] = _planeUrl,
+            });
+            await WaitForHealthAsync("lead-mcp", _leadMcp, _leadMcpUrl, ct);
+        }
+
+        if (_workerMcp is null)
+        {
+            _workerMcp = StartHost("worker-mcp", ChaosBinaries.WorkerMcp(), _workerMcpUrl, shared, extra: new Dictionary<string, string>
+            {
+                ["Landbridge__CoreUrl"] = _planeUrl,
+            });
+            await WaitForHealthAsync("worker-mcp", _workerMcp, _workerMcpUrl, ct);
+        }
+    }
+
+    private static ChaosProcess StartHost(
+        string name, string binary, string url,
+        Dictionary<string, string> shared, Dictionary<string, string> extra)
+    {
+        var env = new Dictionary<string, string>(shared) { ["ASPNETCORE_URLS"] = url };
+        foreach (var (k, v) in extra)
+            env[k] = v;
+        return ChaosProcess.Start(name, binary, [], env, workingDirectory: Path.GetDirectoryName(binary));
+    }
+
+    private async Task WaitForHealthAsync(string name, ChaosProcess process, string url, CancellationToken ct)
+    {
         var deadline = DateTime.UtcNow + options.StartupTimeout;
         while (DateTime.UtcNow < deadline)
         {
             ct.ThrowIfCancellationRequested();
-            if (!_plane.Alive)
-                throw new InvalidOperationException("the control plane exited during startup:\n" + _plane.Tail());
+            if (!process.Alive)
+                throw new InvalidOperationException($"{name} exited during startup:\n" + process.Tail());
             try
             {
-                using var response = await _http.GetAsync(_planeUrl + "/health", ct);
+                using var response = await _http.GetAsync(url + "/health", ct);
                 if (response.IsSuccessStatusCode)
                     return;
             }
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
             {
-                // not listening yet
             }
             await Task.Delay(100, ct);
         }
         throw new TimeoutException(
-            $"the control plane never served /health within {options.StartupTimeout}:\n" + _plane.Tail());
+            $"{name} never served /health within {options.StartupTimeout}:\n" + process.Tail());
     }
 
     /// <summary>
@@ -348,15 +374,15 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         }
     }
 
-    private Task<McpClient> ConnectLeadAsync(CancellationToken ct) => ConnectMcpAsync(_leadToken, ct);
+    private Task<McpClient> ConnectLeadAsync(CancellationToken ct) =>
+        PlaneProbe.ConnectMcpAsync(new Uri(_leadMcpUrl + "/"), _leadToken, ct);
 
     /// <summary>
-    /// Connects to the plane's real MCP endpoint with <paramref name="bearer"/>. Used
-    /// for the Lead, and for replaying a dead worker's token (§17.8: "replay a stale
-    /// worker-instance token"), where the connection itself is expected to be refused.
+    /// Connects to WorkerMCP with <paramref name="bearer"/>. Used for replaying a
+    /// dead worker's token (§17.8: "replay a stale worker-instance token").
     /// </summary>
     public Task<McpClient> ConnectMcpAsync(string bearer, CancellationToken ct) =>
-        PlaneProbe.ConnectMcpAsync(new Uri(_planeUrl + "/"), bearer, ct);
+        PlaneProbe.ConnectMcpAsync(new Uri(_workerMcpUrl + "/"), bearer, ct);
 
     /// <summary>
     /// Whether the worker process for <paramref name="task"/> has actually started on the
@@ -526,7 +552,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     {
         var sb = new StringBuilder();
         sb.AppendLine("╔═ CHAOS DIAGNOSTICS ═══════════════════════════════════════════");
-        sb.AppendLine($"║ plane={_planeUrl} machine={MachineId} workRoot={_workRoot}");
+        sb.AppendLine($"║ plane={_planeUrl} lead={_leadMcpUrl} worker={_workerMcpUrl} machine={MachineId} workRoot={_workRoot}");
         sb.AppendLine("╠═ timeline ════════════════════════════════════════════════════");
         lock (_timeline)
             foreach (var entry in _timeline)
@@ -542,7 +568,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         }
 
         sb.AppendLine("╠═ processes ═══════════════════════════════════════════════════");
-        foreach (var process in new[] { _plane, _landbridged }.Concat(_strays).OfType<ChaosProcess>())
+        foreach (var process in new[] { _plane, _leadMcp, _workerMcp, _landbridged }.Concat(_strays).OfType<ChaosProcess>())
             sb.Append(Indent(process.Tail()));
         sb.AppendLine("╚═══════════════════════════════════════════════════════════════");
         return sb.ToString();
@@ -655,6 +681,8 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         _landbridged?.Dispose();
         foreach (var stray in _strays)
             stray.Dispose();
+        _leadMcp?.Dispose();
+        _workerMcp?.Dispose();
         _plane?.Dispose();
         _http?.Dispose();
         await Task.CompletedTask;

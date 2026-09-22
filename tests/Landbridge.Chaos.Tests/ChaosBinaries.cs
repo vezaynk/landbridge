@@ -11,8 +11,12 @@ namespace Landbridge.Chaos.Tests;
 /// </summary>
 internal static class ChaosBinaries
 {
-    /// <summary>The control plane / MCP host (<c>Landbridge.Mcp</c>).</summary>
+    /// <summary>Core: <c>/runner</c>, dispatch, Apply.</summary>
     public static string ControlPlane() => FromSrc("Landbridge.Mcp", "Landbridge.Mcp");
+
+    public static string LeadMcp() => FromSrc("Landbridge.LeadMcp", "Landbridge.LeadMcp");
+
+    public static string WorkerMcp() => FromSrc("Landbridge.WorkerMcp", "Landbridge.WorkerMcp");
 
     /// <summary>landbridged — note <c>Landbridge.Runner</c>'s AssemblyName is <c>landbridged</c>.</summary>
     public static string Landbridged() => FromSrc("Landbridge.Runner", "landbridged");

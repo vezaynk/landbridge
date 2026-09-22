@@ -64,7 +64,7 @@ If a field would only make sense for software work, it belongs in an opaque blob
 | Component | Role |
 |---|---|
 | `landbridge` | Control plane: state machine, event log, enforcement. One process, one Postgres, one Instance. |
-| `landbridge-mcp` | Control plane HTTP today: both MCP surfaces, OAuth, `/runner`, dashboard, `Apply`. Splits into Core + LeadMCP + WorkerMCP + Dashboard ([`hub-and-write-queue.md`](hub-and-write-queue.md)). |
+| `landbridge-mcp` | Core: `/runner`, dispatch, `Apply`, relay/preview HTTP. MCP is LeadMCP / WorkerMCP; the board is Dashboard ([`hub-and-write-queue.md`](hub-and-write-queue.md)). |
 | `landbridge-lead-mcp` | Public MCP for Leads. Packages Hub nouns; hosts the lead skill and lead inbox watch. |
 | `landbridge-worker-mcp` | Worker MCP. Packages Hub nouns; hosts the worker skill and worker inbox watch. |
 | `landbridge-dashboard` | Human operator UI. Packages Hub nouns into the fleet board; cookie POSTs go to Core. |

@@ -53,6 +53,10 @@ public static class HubEndpoints
             AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ProcessTopic, null, after, ct));
         hub.MapGet("/processes/{id:guid}/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
             AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ProcessTopic, id, after, ct));
+        hub.MapGet("/commands/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.CommandsTopic, null, after, ct));
+        hub.MapGet("/commands/{id:guid}/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.CommandsTopic, id, after, ct));
         hub.MapHubReads();
         return app;
     }

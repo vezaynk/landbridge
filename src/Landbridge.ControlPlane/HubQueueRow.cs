@@ -20,6 +20,7 @@ public sealed class HubQueueRow
     public const string MachinesTopic = "machines";
     public const string ProcessesTopic = "processes";
     public const string ProcessTopic = "process";
+    public const string CommandsTopic = "commands";
 
 
     public long Id { get; set; }

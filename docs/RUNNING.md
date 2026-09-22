@@ -44,7 +44,7 @@ Two dashboards:
   and logs (`Landbridge.ServiceDefaults` wires OTel; the host exports to the Aspire
   collector automatically in this loop).
 - **Landbridge web dashboard** (spec §12) — served by the host at
-  `http://127.0.0.1:5050/dashboard`. See [authentication](#authenticating-a-human)
+  `http://127.0.0.1:5080/dashboard`. See [authentication](#authenticating-a-human)
   below. The Aspire / Development host uses the passphrase `dev`; production
   is fail-closed until you set `Landbridge:Operator:PassphraseHash`.
 

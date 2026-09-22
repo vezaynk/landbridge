@@ -526,6 +526,94 @@ namespace Landbridge.ControlPlane.Migrations
                     b.ToTable("friction_reports", (string)null);
                 });
 
+            modelBuilder.Entity("Landbridge.ControlPlane.CommandRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("AcceptedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("accepted_at");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_id");
+
+                    b.Property<string>("ActorKind")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("actor_kind");
+
+                    b.Property<DateTimeOffset?>("AppliedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("applied_at");
+
+                    b.Property<DateTimeOffset?>("ClaimedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("claimed_at");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Rule")
+                        .HasColumnType("text")
+                        .HasColumnName("rule");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("Slug")
+                        .HasColumnType("text")
+                        .HasColumnName("slug");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TeamId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("team_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_command_queue");
+
+                    b.HasIndex("SessionId")
+                        .HasDatabaseName("ix_command_queue_session_id");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_command_queue_status")
+                        .HasFilter("status = 'queued'");
+
+                    b.HasIndex("TeamId")
+                        .HasDatabaseName("ix_command_queue_team_id");
+
+                    b.HasIndex("ActorKind", "ActorId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ix_command_queue_actor_kind_actor_id_idempotency_key");
+
+                    b.ToTable("command_queue", (string)null);
+                });
+
             modelBuilder.Entity("Landbridge.ControlPlane.HubQueueRow", b =>
                 {
                     b.Property<long>("Id")
