@@ -22,7 +22,10 @@ public static class ForwardingServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddLandbridgeForwarding(this IServiceCollection services)
     {
-        services.TryAddSingleton<RunnerConnectionRegistry>();
+        services.TryAddSingleton<RunnerOutbox>();
+        services.TryAddSingleton(sp => new RunnerConnectionRegistry(
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<RunnerOutbox>()));
         services.TryAddSingleton<ForwardWaiters>();
         services.TryAddSingleton<ForwardOrchestrator>();
         // The other end of a forward's life (§8.3): the store resolves this to tell both

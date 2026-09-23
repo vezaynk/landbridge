@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.Json;
 using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
@@ -28,6 +29,73 @@ public static class RunnerEndpoint
         // Part 3 phase 1: the same inbound frames, over HTTP. Commands still
         // ride the WebSocket. WS remains the dial landbridged uses today.
         app.MapPost("/runner/ingest", IngestAsync).RequireAuthorization();
+        app.MapGet("/runner/events", EventsAsync).RequireAuthorization();
+        app.MapPost("/runner/commands/{id:long}/ack", AckAsync).RequireAuthorization();
+    }
+
+    private static async Task EventsAsync(
+        HttpContext context,
+        RunnerOutbox outbox,
+        CancellationToken ct)
+    {
+        if (LandbridgeClaims.ToPrincipal(context.User) is not Principal.Machine machine)
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
+
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        context.Response.ContentType = "text/event-stream";
+        context.Response.Headers.CacheControl = "no-cache";
+        await context.Response.StartAsync(ct);
+        await context.Response.WriteAsync(": open\n\n", ct);
+        await context.Response.Body.FlushAsync(ct);
+        var reader = outbox.Subscribe(out var unsubscribe);
+        try
+        {
+            var seen = new HashSet<long>();
+            foreach (var row in await outbox.UnackedAsync(machine.MachineId, ct))
+            {
+                seen.Add(row.Id);
+                await WriteCommandAsync(context, row, ct);
+            }
+
+            await foreach (var id in reader.ReadAllAsync(ct))
+            {
+                if (!seen.Add(id))
+                    continue;
+                var row = await outbox.FindAsync(id, ct);
+                if (row is null || row.MachineId != machine.MachineId || row.AckedAt is not null)
+                    continue;
+                await WriteCommandAsync(context, row, ct);
+            }
+        }
+        finally
+        {
+            unsubscribe.Dispose();
+        }
+    }
+
+    private static async Task WriteCommandAsync(HttpContext context, RunnerOutboxRow row, CancellationToken ct)
+    {
+        var data = JsonSerializer.Serialize(new
+        {
+            id = row.Id,
+            kind = row.Kind,
+            frame = row.Payload,
+        });
+        await context.Response.WriteAsync($"id: {row.Id}\nevent: command\ndata: {data}\n\n", ct);
+        await context.Response.Body.FlushAsync(ct);
+    }
+
+    private static async Task<IResult> AckAsync(
+        HttpContext context, long id, RunnerOutbox outbox, CancellationToken ct)
+    {
+        if (LandbridgeClaims.ToPrincipal(context.User) is not Principal.Machine machine)
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return await outbox.AckAsync(machine.MachineId, id, ct)
+            ? Results.NoContent()
+            : Results.NotFound();
     }
 
     private static async Task<IResult> IngestAsync(
