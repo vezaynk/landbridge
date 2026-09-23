@@ -92,14 +92,28 @@ public sealed class WaitTtlSweeper : IHostedService
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Stops sweeping. Safe to call more than once, which the host does: it stops a
+    /// hosted service on shutdown and again on dispose. Taking the source out of the
+    /// field first means the second call finds nothing rather than cancelling one it
+    /// has already disposed.
+    /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_cts is null)
+        var cts = Interlocked.Exchange(ref _cts, null);
+        if (cts is null)
             return;
-        await _cts.CancelAsync();
-        if (_timer is not null)
-            await _timer.DisposeAsync();
-        _cts.Dispose();
+
+        await cts.CancelAsync();
+
+        // Timer first: once it is gone no further sweep can be scheduled, so disposing
+        // the source cannot race a sweep that is only just picking up its token. A
+        // sweep already in flight is cancelled above and lands in SweepSafeAsync.
+        var timer = Interlocked.Exchange(ref _timer, null);
+        if (timer is not null)
+            await timer.DisposeAsync();
+
+        cts.Dispose();
     }
 
     private async Task SweepSafeAsync(CancellationToken ct)

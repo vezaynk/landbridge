@@ -122,11 +122,15 @@ public sealed class DispatchService : IHostedService
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_cts is null)
+        var cts = Interlocked.Exchange(ref _cts, null);
+        // Taken out of the field first so a second stop finds nothing: the host stops a
+        // hosted service on shutdown and again on dispose.
+        if (cts is null)
             return;
-        await _cts.CancelAsync();
-        if (_livenessTimer is not null)
-            await _livenessTimer.DisposeAsync();
+        await cts.CancelAsync();
+        var livenessTimer = Interlocked.Exchange(ref _livenessTimer, null);
+        if (livenessTimer is not null)
+            await livenessTimer.DisposeAsync();
         _wake.Writer.TryComplete();
         foreach (var task in new[] { _loop, _notifyPump })
         {
@@ -135,7 +139,7 @@ public sealed class DispatchService : IHostedService
             try { await task; }
             catch (OperationCanceledException) { }
         }
-        _cts.Dispose();
+        cts.Dispose();
     }
 
     /// <summary>Nudges the loop to run a dispatch pass — e.g. the socket loop calls

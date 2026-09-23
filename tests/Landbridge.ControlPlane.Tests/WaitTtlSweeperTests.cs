@@ -249,6 +249,35 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Stopping twice is not an error. The host stops a hosted service on
+    /// <c>StopAsync</c> and again on <c>Dispose</c>, and WebApplicationFactory walks
+    /// both on teardown — so a sweeper that only survives the first stop takes down
+    /// whatever test disposed the host, naming a CancellationTokenSource rather than
+    /// anything the test was about.
+    /// </summary>
+    [SkippableFact]
+    public async Task Stopping_twice_is_not_an_error()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var sweeper = NewSweeper(clock, new RunnerConnectionRegistry(clock));
+
+        await sweeper.StartAsync(CancellationToken.None);
+        await sweeper.StopAsync(CancellationToken.None);
+        await sweeper.StopAsync(CancellationToken.None);
+    }
+
+    /// <summary>A sweeper that never started stops cleanly too — the host stops
+    /// services it failed to start when startup throws partway down the list.</summary>
+    [SkippableFact]
+    public async Task Stopping_without_starting_is_not_an_error()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        await NewSweeper(clock, new RunnerConnectionRegistry(clock)).StopAsync(CancellationToken.None);
+    }
+
     private WaitTtlSweeper NewSweeper(
         TimeProvider clock, RunnerConnectionRegistry registry,
         TimeSpan? waitTtl = null, TimeSpan? machineWindow = null, TimeSpan? sweepInterval = null) =>
