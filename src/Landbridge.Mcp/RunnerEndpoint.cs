@@ -22,8 +22,81 @@ namespace Landbridge.Mcp;
 /// </summary>
 public static class RunnerEndpoint
 {
-    public static void MapRunnerEndpoint(this WebApplication app) =>
+    public static void MapRunnerEndpoint(this WebApplication app)
+    {
         app.Map("/runner", HandleAsync).RequireAuthorization();
+        // Part 3 phase 1: the same inbound frames, over HTTP. Commands still
+        // ride the WebSocket. WS remains the dial landbridged uses today.
+        app.MapPost("/runner/ingest", IngestAsync).RequireAuthorization();
+    }
+
+    private static async Task<IResult> IngestAsync(
+        HttpContext context,
+        RunnerConnectionRegistry registry,
+        RunnerEventSink sink,
+        DispatchService dispatch,
+        IDbContextFactory<LandbridgeDbContext> dbFactory,
+        TimeProvider clock,
+        ILoggerFactory loggerFactory,
+        CancellationToken ct)
+    {
+        if (LandbridgeClaims.ToPrincipal(context.User) is not Principal.Machine machine)
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        var frame = await new StreamReader(context.Request.Body).ReadToEndAsync(ct);
+        var known = await IngestFrameAsync(
+            frame, machine.MachineId, connection: null,
+            registry, sink, dispatch, dbFactory, clock,
+            loggerFactory.CreateLogger("Landbridge.Mcp.RunnerEndpoint"), ct);
+        return known
+            ? Results.NoContent()
+            : Results.BadRequest(new { error = "unrecognized runner frame" });
+    }
+
+    /// <summary>
+    /// One §10 frame. Heartbeats upsert last-value columns. Events go to
+    /// <see cref="RunnerEventSink"/>. <paramref name="connection"/> is set only
+    /// on the WebSocket path so a superseded socket cannot count as a beat.
+    /// </summary>
+    internal static async Task<bool> IngestFrameAsync(
+        string message,
+        Guid machineId,
+        RunnerConnectionRegistry.ConnectionToken? connection,
+        RunnerConnectionRegistry registry,
+        RunnerEventSink sink,
+        DispatchService dispatch,
+        IDbContextFactory<LandbridgeDbContext> dbFactory,
+        TimeProvider clock,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        if (RunnerWire.DecodeHeartbeat(message) is { } heartbeat)
+        {
+            // On the socket path a superseded connection must not count as a beat (#94).
+            // Over HTTP there is no connection to supersede: the bearer token is the
+            // authority, and the facts land in `machines` either way.
+            var live = connection is not { } token || registry.ApplyHeartbeat(token, heartbeat);
+            if (live)
+            {
+                try
+                {
+                    await using var db = await dbFactory.CreateDbContextAsync(ct);
+                    await HubOutbox.WriteHeartbeatAsync(db, clock, machineId, heartbeat, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex, "hub outbox write failed for heartbeat {Machine}", machineId);
+                }
+            }
+            dispatch.Signal();
+            return true;
+        }
+        if (RunnerWire.DecodeEvent(message) is { } evt)
+        {
+            await sink.HandleAsync(evt, machineId, ct);
+            return true;
+        }
+        return false;
+    }
 
     private static async Task HandleAsync(
         HttpContext context,
@@ -202,35 +275,9 @@ public static class RunnerEndpoint
             if (message is null)
                 break; // clean close
 
-            // Heartbeat shares the channel but is not in the event enum (§10).
-            if (RunnerWire.DecodeHeartbeat(message) is { } heartbeat)
-            {
-                // Keyed by the authenticated machine id, not the self-reported one — and by
-                // THIS connection (#94), so a heartbeat still arriving on a socket that has
-                // been superseded cannot steer the live connection's readiness or refresh
-                // its timestamp on behalf of a socket that is no longer carrying anything.
-                if (registry.ApplyHeartbeat(connection, heartbeat))
-                {
-                    try
-                    {
-                        await using var db = await dbFactory.CreateDbContextAsync(ct);
-                        await HubOutbox.WriteHeartbeatAsync(db, clock, machineId, heartbeat, ct);
-
-                    }
-                    catch (Exception ex) when (ex is not OperationCanceledException)
-                    {
-                        logger.LogWarning(ex, "hub outbox write failed for heartbeat {Machine}", machineId);
-                    }
-                }
-                dispatch.Signal(); // a newly-ready machine can take work now
-                continue;
-            }
-            if (RunnerWire.DecodeEvent(message) is { } evt)
-            {
-                await sink.HandleAsync(evt, connection.MachineId, ct);
-                continue;
-            }
-            logger.LogWarning("runner {Machine} sent an unrecognized frame; ignoring", machineId);
+            if (!await IngestFrameAsync(
+                    message, machineId, connection, registry, sink, dispatch, dbFactory, clock, logger, ct))
+                logger.LogWarning("runner {Machine} sent an unrecognized frame; ignoring", machineId);
         }
     }
 
