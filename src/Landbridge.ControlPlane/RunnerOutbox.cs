@@ -24,7 +24,14 @@ public sealed class RunnerOutboxRow
 public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock)
 {
     private readonly object _gate = new();
-    private readonly List<Channel<long>> _subscribers = [];
+
+    /// <summary>
+    /// Live streams, keyed by the machine they serve. Keyed rather than flat so one
+    /// command wakes the one stream it is addressed to: a flat list wakes every
+    /// connected runner and makes each of them ask the database whether the row was
+    /// even theirs, which is a query per machine per command.
+    /// </summary>
+    private readonly Dictionary<Guid, List<Channel<RunnerOutboxRow>>> _subscribers = [];
 
     public async Task<long> EnqueueAsync(Guid machineId, RunnerCommand command, CancellationToken ct)
     {
@@ -40,7 +47,17 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
         };
         db.Set<RunnerOutboxRow>().Add(row);
         await db.SaveChangesAsync(ct);
-        Publish(row.Id);
+        // A detached copy: `row` belongs to the scope disposed on the way out of this
+        // method, and a subscriber reads it on another thread long after that.
+        Publish(new RunnerOutboxRow
+        {
+            Id = row.Id,
+            MachineId = row.MachineId,
+            SessionId = row.SessionId,
+            Kind = row.Kind,
+            Payload = row.Payload,
+            CreatedAt = row.CreatedAt,
+        });
         return row.Id;
     }
 
@@ -69,35 +86,52 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
             .ToListAsync(ct);
     }
 
-    public async Task<RunnerOutboxRow?> FindAsync(long id, CancellationToken ct)
+    /// <summary>
+    /// Rows enqueued for <paramref name="machineId"/> after this call. Subscribe
+    /// before taking the snapshot: a row landing between the two then arrives on both,
+    /// which the caller can drop, where the reverse would lose it.
+    /// </summary>
+    public ChannelReader<RunnerOutboxRow> Subscribe(Guid machineId, out IDisposable unsubscribe)
     {
-        await using var scope = scopes.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
-        return await db.Set<RunnerOutboxRow>().AsNoTracking().FirstOrDefaultAsync(r => r.Id == id, ct);
-    }
-
-    /// <summary>Ids enqueued after this call. Subscribe before the snapshot.</summary>
-    public ChannelReader<long> Subscribe(out IDisposable unsubscribe)
-    {
-        var channel = Channel.CreateUnbounded<long>();
+        var channel = Channel.CreateUnbounded<RunnerOutboxRow>();
         lock (_gate)
-            _subscribers.Add(channel);
+        {
+            if (!_subscribers.TryGetValue(machineId, out var streams))
+                _subscribers[machineId] = streams = [];
+            streams.Add(channel);
+        }
         unsubscribe = new Unsub(() =>
         {
             lock (_gate)
-                _subscribers.Remove(channel);
+            {
+                // Drop the list with its last stream, so the map does not keep one entry
+                // for every machine that has ever connected.
+                if (_subscribers.TryGetValue(machineId, out var streams)
+                    && streams.Remove(channel) && streams.Count == 0)
+                    _subscribers.Remove(machineId);
+            }
             channel.Writer.TryComplete();
         });
         return channel.Reader;
     }
 
-    private void Publish(long id)
+    /// <summary>True once the row has been acknowledged — by a runner, or by the
+    /// socket write that carried the same command down the WebSocket.</summary>
+    public async Task<bool> IsAckedAsync(long id, CancellationToken ct)
     {
-        List<Channel<long>> copy;
+        await using var scope = scopes.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
+        return await db.Set<RunnerOutboxRow>().AsNoTracking()
+            .AnyAsync(r => r.Id == id && r.AckedAt != null, ct);
+    }
+
+    private void Publish(RunnerOutboxRow row)
+    {
+        List<Channel<RunnerOutboxRow>>? copy;
         lock (_gate)
-            copy = [.. _subscribers];
-        foreach (var channel in copy)
-            channel.Writer.TryWrite(id);
+            copy = _subscribers.TryGetValue(row.MachineId, out var streams) ? [.. streams] : null;
+        foreach (var channel in copy ?? [])
+            channel.Writer.TryWrite(row);
     }
 
     private static Guid? SessionOf(RunnerCommand command) => command switch

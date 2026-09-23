@@ -79,6 +79,78 @@ public sealed class RunnerOutboxTests(PostgresFixture pg) : IAsyncLifetime
         await app.StopAsync(ct);
     }
 
+    /// <summary>
+    /// A command addressed to one machine does not reach another machine's stream.
+    /// The fan-out is keyed by machine, so this is also what keeps one command from
+    /// waking — and costing a query on — every runner in the fleet.
+    /// </summary>
+    [SkippableFact]
+    public async Task One_machines_command_does_not_reach_anothers_stream()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = cts.Token;
+        await using var app = BuildCore();
+        await app.StartAsync(ct);
+        var (a, b) = await TwoMachinesAsync(pg, ct);
+
+        await app.Services.GetRequiredService<RunnerConnectionRegistry>()
+            .SendAsync(a.MachineId, new KillCommand(SessionId.New()), ct);
+
+        // B is listening and must stay empty.
+        using var bClient = Client(app, b.Access.Token);
+        using var quiet = new CancellationTokenSource(TimeSpan.FromMilliseconds(600));
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, quiet.Token);
+        using var bStream = await bClient.GetAsync(
+            "/runner/events", HttpCompletionOption.ResponseHeadersRead, ct);
+        string? leaked;
+        try
+        {
+            leaked = await ReadCommandOrTimeoutAsync(bStream, linked.Token);
+        }
+        catch (OperationCanceledException) when (quiet.IsCancellationRequested)
+        {
+            leaked = null;
+        }
+        Assert.Null(leaked);
+
+        // The same command is waiting for A, so the silence above is B's, not an
+        // outbox that dropped it.
+        using var aClient = Client(app, a.Access.Token);
+        using var aStream = await aClient.GetAsync(
+            "/runner/events", HttpCompletionOption.ResponseHeadersRead, ct);
+        using var doc = JsonDocument.Parse(await ReadCommandAsync(aStream, ct));
+        Assert.Equal("kill", doc.RootElement.GetProperty("kind").GetString());
+        await app.StopAsync(ct);
+    }
+
+    /// <summary>
+    /// A stream with nothing to say still says something. Without it an idle proxy
+    /// closes a quiet stream out from under both ends.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_quiet_stream_sends_a_keepalive()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = cts.Token;
+        await using var app = BuildCore(keepAliveMs: 150);
+        await app.StartAsync(ct);
+
+        await using var db = pg.NewContext();
+        var tokens = new TokenService(db, TimeProvider.System);
+        var creds = await tokens.ExchangeEnrollmentAsync(
+            (await tokens.IssueEnrollmentTokenAsync(ct)).Token, new MachineDeclaration("idle", "linux"), ct);
+        Assert.NotNull(creds);
+
+        using var client = Client(app, creds!.Access.Token);
+        using var stream = await client.GetAsync(
+            "/runner/events", HttpCompletionOption.ResponseHeadersRead, ct);
+        Assert.Equal(HttpStatusCode.OK, stream.StatusCode);
+        Assert.Equal(": keepalive", await ReadCommentAsync(stream, ct));
+        await app.StopAsync(ct);
+    }
+
     private static async Task<string> ReadCommandAsync(HttpResponseMessage response, CancellationToken ct)
     {
         var found = await ReadCommandOrTimeoutAsync(response, ct);
@@ -101,6 +173,44 @@ public sealed class RunnerOutboxTests(PostgresFixture pg) : IAsyncLifetime
         return null;
     }
 
+    private static async Task<string?> ReadCommentAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream);
+        // ": open" goes out as soon as the stream is established; the keepalive is the
+        // next comment after it, which is the one this is waiting for.
+        var seenOpen = false;
+        while (!ct.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(ct);
+            if (line is null)
+                return null;
+            if (!line.StartsWith(':'))
+                continue;
+            if (!seenOpen)
+            {
+                seenOpen = true;
+                continue;
+            }
+            return line;
+        }
+        return null;
+    }
+
+    private static async Task<(MachineCredentials A, MachineCredentials B)> TwoMachinesAsync(
+        PostgresFixture pg, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var tokens = new TokenService(db, TimeProvider.System);
+        var first = await tokens.ExchangeEnrollmentAsync(
+            (await tokens.IssueEnrollmentTokenAsync(ct)).Token, new MachineDeclaration("a", "linux"), ct);
+        var second = await tokens.ExchangeEnrollmentAsync(
+            (await tokens.IssueEnrollmentTokenAsync(ct)).Token, new MachineDeclaration("b", "linux"), ct);
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        return (first!, second!);
+    }
+
     private static HttpClient Client(WebApplication app, string bearer)
     {
         var client = new HttpClient
@@ -111,7 +221,7 @@ public sealed class RunnerOutboxTests(PostgresFixture pg) : IAsyncLifetime
         return client;
     }
 
-    private WebApplication BuildCore()
+    private WebApplication BuildCore(int? keepAliveMs = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -119,6 +229,8 @@ public sealed class RunnerOutboxTests(PostgresFixture pg) : IAsyncLifetime
         builder.Configuration["ConnectionStrings:Landbridge"] = pg.ConnectionString;
         builder.Configuration["Landbridge:PublicMcpUrl"] = "https://mcp.example.com";
         builder.Configuration["Landbridge:AuthUrl"] = "https://auth.example.com";
+        if (keepAliveMs is { } ms)
+            builder.Configuration["Landbridge:RunnerStreamKeepAliveMs"] = ms.ToString();
         builder.AddPlane();
         var app = builder.Build();
         app.UseAuthentication();
