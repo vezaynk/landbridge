@@ -71,11 +71,10 @@ public static class RunnerEndpoint
     {
         if (RunnerWire.DecodeHeartbeat(message) is { } heartbeat)
         {
-            var live = connection is { } token
-                ? registry.ApplyHeartbeat(token, heartbeat)
-                : true;
-            if (connection is null)
-                registry.ApplyHeartbeat(machineId, heartbeat);
+            // On the socket path a superseded connection must not count as a beat (#94).
+            // Over HTTP there is no connection to supersede: the bearer token is the
+            // authority, and the facts land in `machines` either way.
+            var live = connection is not { } token || registry.ApplyHeartbeat(token, heartbeat);
             if (live)
             {
                 try
