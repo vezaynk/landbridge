@@ -8,7 +8,7 @@ namespace Landbridge.Mcp;
 /// <summary>
 /// Snapshot-on-wake for Lead and worker inbox. Hub SSE is the doorbell when
 /// <c>Landbridge:HubUrl</c> is set; <see cref="SessionEventFanout"/> remains
-/// the test-host path. Per-session bodies and <c>PullReceipt</c> stay store writes.
+/// the test-host path. The worker snapshot may POST the receipt to Core.
 /// </summary>
 public static class InboxWatch
 {
@@ -52,23 +52,17 @@ public static class InboxWatch
     }
 
     public static async IAsyncEnumerable<WorkerInboxView> Worker(
-        SessionStore store,
         HubClient? hub,
         string? bearer,
         SessionEventFanout? fanout,
         WorkerCaller caller,
+        Func<CancellationToken, Task<WorkerInboxView>> snapshot,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        async Task<WorkerInboxView> Snapshot(CancellationToken token) =>
-            await store.GetWorkerInboxAsync(caller, token)
-            ?? throw new McpException(
-                "no assignment for this credential: the session is gone, or you are no longer its " +
-                "incumbent worker (it was parked, failed, or handed to a successor).");
-
         if (hub is { Enabled: true } && bearer is { Length: > 0 })
         {
             await foreach (var snap in OnHub(
-                hub, bearer, $"/sessions/{caller.Session.Value:D}/events", filter: null, Snapshot, ct))
+                hub, bearer, $"/sessions/{caller.Session.Value:D}/events", filter: null, snapshot, ct))
                 yield return snap;
             yield break;
         }
@@ -76,9 +70,9 @@ public static class InboxWatch
         if (fanout is null)
             throw new McpException("the inbox feed is not available in this process.");
         using var sub = fanout.Subscribe(caller.Session.Value);
-        yield return await Snapshot(ct);
+        yield return await snapshot(ct);
         await foreach (var _ in sub.Reader.ReadAllAsync(ct))
-            yield return await Snapshot(ct);
+            yield return await snapshot(ct);
     }
 
     internal static async IAsyncEnumerable<T> OnHub<T>(

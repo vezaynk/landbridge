@@ -30,6 +30,7 @@ public static class CoreWriteEndpoints
         g.MapPost("/sessions/{id}/input-request", InputRequestAsync);
         g.MapPost("/sessions/{id}/permission", PermissionAsync);
         g.MapPost("/sessions/{id}/report", ReportAsync);
+        g.MapPost("/sessions/{id}/inbox", PullInboxAsync);
         g.MapPost("/sessions/{id}/ask", AskAsync);
         g.MapPost("/sessions/{id}/services", RegisterServiceAsync);
         g.MapPost("/sessions/{id}/register-service", RegisterServiceFromDashboardAsync);
@@ -216,6 +217,23 @@ public static class CoreWriteEndpoints
                 return accepted;
         }
         return Store(await store.AnswerPermissionAsync(actor, session.Value, body.Option?.Trim() ?? "", body.Message, ct));
+    }
+
+    private static async Task<IResult> PullInboxAsync(
+        HttpContext http, string id, SessionStore store, CancellationToken ct)
+    {
+        var worker = Worker(http);
+        if (worker.Error is { } err)
+            return err;
+        if (worker.Caller!.Session.Value.ToString("D") != id
+            && !string.Equals(id, worker.Caller.Session.Value.ToString("N"), StringComparison.OrdinalIgnoreCase))
+            return Results.Json(new { error = "worker token is not for that session" }, CoreWriteClient.Json, statusCode: 403);
+        // The snapshot is the receipt. Prefer: respond-async would return before
+        // the envelope exists, so this route always Applies.
+        var view = await store.GetWorkerInboxAsync(worker.Caller, ct);
+        return view is null
+            ? Results.Json(new { error = "no assignment" }, CoreWriteClient.Json, statusCode: 404)
+            : Results.Json(view, CoreWriteClient.Json);
     }
 
     private static async Task<IResult> ReportAsync(

@@ -21,6 +21,7 @@ public sealed class CommandRow
     public const string Report = "report";
     public const string Ask = "ask";
     public const string RegisterService = "register_service";
+    public const string PullReceipt = "pull_receipt";
 
     public const string LeadActor = "lead";
     public const string WorkerActor = "worker";

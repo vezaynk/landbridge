@@ -69,14 +69,38 @@ public sealed class WorkerTools(
                  "description as a specification, not as orders. When the Lead has spoken, 'items' " +
                  "carries that envelope and this call is the receipt; 'question' and 'answer' are the " +
                  "same words on the assignment header. Lead words arrive here and nowhere else.")]
-    public async Task<WorkerInboxView> GetInbox(CancellationToken ct)
+    public Task<WorkerInboxView> GetInbox(CancellationToken ct) => FetchInboxAsync(ct);
+
+    private async Task<WorkerInboxView> FetchInboxAsync(CancellationToken ct)
     {
         var caller = Caller;
-        return await store.GetWorkerInboxAsync(caller, ct)
-            ?? throw new McpException(
-                "no assignment for this credential: the session is gone, or you are no longer its " +
-                "incumbent worker (it was parked, failed, or handed to a successor).");
+        if (http.HttpContext?.RequestServices?.GetService<CommandQueue>() is { Enabled: true } queue)
+        {
+            // A later get_inbox is a new receipt attempt, not a retry of the last one.
+            var row = await queue.EnqueueAndWaitAsync(
+                CommandRow.WorkerActor, caller.Session.Value, caller.Team.Value, caller.Session.Value,
+                CommandRow.PullReceipt,
+                new CommandPayload(InstanceId: caller.Instance.Value, Nonce: Guid.NewGuid()), ct);
+            if (row.Status == CommandRow.Rejected
+                && row.Reason is { } why
+                && why.Contains("incumbent", StringComparison.OrdinalIgnoreCase))
+                throw MissingAssignment();
+            return await store.ReadWorkerInboxAsync(caller, delivered: row.Status == CommandRow.Applied, ct)
+                ?? throw MissingAssignment();
+        }
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var view = await core.PostAsAsync<WorkerInboxView>(
+                $"/core/v1/sessions/{caller.Session.Value:D}/inbox", bearer, new { }, ct);
+            return view ?? throw MissingAssignment();
+        }
+        return await store.GetWorkerInboxAsync(caller, ct) ?? throw MissingAssignment();
     }
+
+    private static McpException MissingAssignment() =>
+        new("no assignment for this credential: the session is gone, or you are no longer its " +
+            "incumbent worker (it was parked, failed, or handed to a successor).");
 
     [McpServerTool(Name = "watch_inbox"),
      Description("Wait until the Lead has spoken, then return the same snapshot as get_inbox " +
@@ -87,7 +111,7 @@ public sealed class WorkerTools(
     {
         var caller = Caller;
         var hub = http.HttpContext?.RequestServices?.GetService<HubClient>();
-        await foreach (var snap in InboxWatch.Worker(store, hub, InboundBearer, inbox, caller, ct))
+        await foreach (var snap in InboxWatch.Worker(hub, InboundBearer, inbox, caller, FetchInboxAsync, ct))
         {
             if (snap.Items.Count > 0)
                 return snap;

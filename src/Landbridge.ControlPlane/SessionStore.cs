@@ -779,6 +779,26 @@ public sealed class SessionStore(
         return ToWorkerInbox(row, deliveredId: null, deliveredText: null);
     }
 
+    /// <summary>
+    /// Inbox snapshot without <see cref="PullReceipt"/>. Used after Core has
+    /// already applied the receipt, so a second Apply on WorkerMCP does not
+    /// run. <paramref name="delivered"/> is true only for the call that
+    /// transitioned <c>awaiting_pull</c>.
+    /// </summary>
+    public async Task<WorkerInboxView?> ReadWorkerInboxAsync(
+        WorkerCaller caller, bool delivered, CancellationToken ct = default)
+    {
+        var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Session.Value, ct);
+        if (row is null)
+            return null;
+        if (row.TeamId != caller.Team.Value || row.CurrentInstanceId != caller.Instance.Value)
+            return null;
+        return ToWorkerInbox(
+            row,
+            delivered ? row.LastMessageId : null,
+            delivered ? row.InputAnswer : null);
+    }
+
     private static WorkerInboxView ToWorkerInbox(SessionRow row, Guid? deliveredId, string? deliveredText)
     {
         IReadOnlyList<WorkerInboxItem> items = deliveredId is { } id

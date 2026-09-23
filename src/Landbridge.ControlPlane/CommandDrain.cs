@@ -139,6 +139,11 @@ public sealed class CommandDrain(
             CommandRow.RegisterService => await store.RegisterServiceAsync(
                 new WorkerCaller(team, session, new WorkerInstanceId(payload.InstanceId ?? Guid.Empty)),
                 payload.Name ?? "", payload.Port ?? 0, ct),
+            CommandRow.PullReceipt => await store.ApplyAsync(
+                session,
+                new PullReceipt(new WorkerCaller(
+                    team, session, new WorkerInstanceId(payload.InstanceId ?? Guid.Empty))),
+                ct),
             _ => new StoreResult.Rejected(Rule.InvalidSourceState, $"unknown command kind {row.Kind}"),
         };
 
@@ -232,4 +237,5 @@ public sealed record CommandPayload(
     string? Kind = null,
     string? Name = null,
     int? Port = null,
-    Guid? InstanceId = null);
+    Guid? InstanceId = null,
+    Guid? Nonce = null);
