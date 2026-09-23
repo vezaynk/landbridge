@@ -153,13 +153,13 @@ public sealed record PromptCommand(SessionId Session) : RunnerCommand;
 /// reports the bound port via <see cref="ForwardOpenedEvent"/>, and opens its
 /// tunnel per accepted connection.
 ///
-/// <para>The <see cref="Role"/>/<see cref="Grant"/>/<see cref="RelayUrl"/>/<see cref="Port"/>
-/// fields were <b>added</b> to the frozen §10 member once §8.3's internals were
-/// implemented — additions are wire-compatible because the envelope decode ignores
-/// unknown properties and fills absent ones with these defaults. An older envelope
-/// carrying none decodes to an empty <see cref="Role"/> and <c>0</c>
-/// <see cref="Port"/>, which the runner treats as "acknowledge, do nothing"
-/// (§10, the pre-increment-3 stub behaviour) rather than crashing.</para>
+/// <para>The defaults on <see cref="Role"/>, <see cref="Grant"/>, <see cref="RelayUrl"/>
+/// and <see cref="Port"/> are load-bearing, not convenience: a parameter without one
+/// takes <c>default</c> when the property is absent from the envelope, which for these
+/// strings is <c>null</c> rather than empty — a null in a non-nullable property, handed
+/// to every reader. With them an envelope missing all four decodes to empty, and the
+/// runner acknowledges a role it does not recognise rather than crashing on it (§10: a
+/// frame is never a reason to drop the channel).</para>
 /// </summary>
 /// <param name="ServiceName">
 /// Which registered service this forward is for — <b>diagnostic only: the runner never reads
@@ -168,7 +168,7 @@ public sealed record PromptCommand(SessionId Session) : RunnerCommand;
 /// and for a human reading a captured envelope. Do not start routing on it: port is the
 /// resolution key on both ends, and a second one would be a second source of truth.
 /// </param>
-/// <param name="Role"><c>consumer</c>|<c>producer</c> (<see cref="RelayTunnel"/>); empty on a legacy envelope.</param>
+/// <param name="Role"><c>consumer</c>|<c>producer</c> (<see cref="RelayTunnel"/>).</param>
 /// <param name="Grant">The opaque connection grant both ends present to the relay, each for its own role.</param>
 /// <param name="RelayUrl">The relay base URL this end dials (http/https → ws/wss <c>/tunnel</c>).</param>
 /// <param name="Port">Producer: the registered service's loopback port to dial. Consumer: <c>0</c> (it binds one).</param>

@@ -401,9 +401,11 @@ public class RunnerDaemonTests
 
         var stop = await h.Daemon.HandleAsync(new StopCommand(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve));
         var kill = await h.Daemon.HandleAsync(new KillCommand(task));
-        // A legacy open-forward with no role (the pre-increment-3 envelope shape)
-        // is acknowledged and ignored — never crashed on (§8.3, §10).
-        var forward = await h.Daemon.HandleAsync(new OpenForwardCommand(task, "fwd-1", "postgres"));
+        // An open-forward naming a role this runner does not know is acknowledged and
+        // ignored — never crashed on (§8.3, §10: a frame is not a reason to drop the
+        // channel). Nothing generates one; this is the runner refusing to assume.
+        var forward = await h.Daemon.HandleAsync(
+            new OpenForwardCommand(task, "fwd-1", "postgres", Role: "", Grant: "", RelayUrl: "", Port: 0));
 
         Assert.IsType<CommandOutcome.Acknowledged>(stop);
         Assert.IsType<CommandOutcome.Acknowledged>(kill);
