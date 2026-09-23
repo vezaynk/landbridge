@@ -629,7 +629,13 @@ public static class CoreWriteEndpoints
         if (!PreferHeader.WantsRespondAsync(http.Request))
             return null;
         var queue = http.RequestServices.GetRequiredService<CommandQueue>();
-        var row = await queue.EnqueueAsync(actorKind, actorId, teamId, sessionId, kind, payload, ct);
+        // RFC-style Idempotency-Key: the client names the attempt, so a retry after a
+        // dropped 202 attaches to the command already accepted instead of queuing a
+        // second. Absent, every POST is its own command — which is the honest reading,
+        // since two identical bodies are not evidence that one of them is a retry.
+        var idempotencyKey = http.Request.Headers["Idempotency-Key"].ToString();
+        var row = await queue.EnqueueAsync(
+            actorKind, actorId, teamId, sessionId, kind, payload, ct, idempotencyKey);
         PreferHeader.ApplyRespondAsync(http.Response);
         return Results.Json(CoreStoreReply.FromCommand(row), CoreWriteClient.Json,
             statusCode: StatusCodes.Status202Accepted);

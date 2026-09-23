@@ -73,7 +73,7 @@ public sealed class CommandQueueTests(PostgresFixture pg) : IAsyncLifetime
         var accepted = await queue.EnqueueAsync(
             CommandRow.WorkerActor, created.Session.Id.Value, team.Value, created.Session.Id.Value,
             CommandRow.PullReceipt,
-            new CommandPayload(InstanceId: instance.Value, Nonce: Guid.NewGuid()),
+            new CommandPayload(InstanceId: instance.Value),
             CancellationToken.None);
 
         var services = new ServiceCollection();
@@ -96,5 +96,81 @@ public sealed class CommandQueueTests(PostgresFixture pg) : IAsyncLifetime
         var again = await read.ReadWorkerInboxAsync(caller, delivered: false);
         Assert.Empty(again!.Items);
         Assert.Equal(MessageState.Idle, (await check.Sessions.AsNoTracking().SingleAsync(s => s.Id == created.Session.Id.Value)).MessageState);
+    }
+
+    /// <summary>
+    /// Two identical requests are two commands. They were one: the key was a hash of the
+    /// payload, so a Lead answering "yes" to a session and answering "yes" again later
+    /// had the second discarded and was handed the first one's outcome — permanently,
+    /// and with nothing reporting the loss.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_unkeyed_repeat_is_its_own_command()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var (queue, team, session) = await SeededQueueAsync(db);
+        var lead = Guid.NewGuid();
+
+        var first = await queue.EnqueueAsync(
+            CommandRow.LeadActor, lead, team, session,
+            CommandRow.InputResponse, new CommandPayload(Answer: "yes"), default);
+        var second = await queue.EnqueueAsync(
+            CommandRow.LeadActor, lead, team, session,
+            CommandRow.InputResponse, new CommandPayload(Answer: "yes"), default);
+
+        Assert.NotEqual(first.Id, second.Id);
+    }
+
+    /// <summary>A retry names the attempt, and attaches to what was already accepted.</summary>
+    [SkippableFact]
+    public async Task The_same_key_twice_is_one_command()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var (queue, team, session) = await SeededQueueAsync(db);
+        var lead = Guid.NewGuid();
+
+        var first = await queue.EnqueueAsync(
+            CommandRow.LeadActor, lead, team, session,
+            CommandRow.StopSession, new CommandPayload(TtlSeconds: 30), default, "attempt-1");
+        var retry = await queue.EnqueueAsync(
+            CommandRow.LeadActor, lead, team, session,
+            CommandRow.StopSession, new CommandPayload(TtlSeconds: 30), default, "attempt-1");
+
+        Assert.Equal(first.Id, retry.Id);
+    }
+
+    /// <summary>
+    /// Sameness is the caller's claim, not ours to infer: identical payloads under
+    /// different keys are different requests.
+    /// </summary>
+    [SkippableFact]
+    public async Task Different_keys_over_the_same_payload_are_different_commands()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var (queue, team, session) = await SeededQueueAsync(db);
+        var lead = Guid.NewGuid();
+
+        var first = await queue.EnqueueAsync(
+            CommandRow.LeadActor, lead, team, session,
+            CommandRow.Ask, new CommandPayload(Text: "which db?"), default, "attempt-1");
+        var second = await queue.EnqueueAsync(
+            CommandRow.LeadActor, lead, team, session,
+            CommandRow.Ask, new CommandPayload(Text: "which db?"), default, "attempt-2");
+
+        Assert.NotEqual(first.Id, second.Id);
+    }
+
+    /// <summary>A queue over <paramref name="db"/> with one session already created.</summary>
+    private static async Task<(CommandQueue Queue, Guid Team, Guid Session)> SeededQueueAsync(
+        LandbridgeDbContext db)
+    {
+        var team = TeamId.New();
+        var clock = new FakeTimeProvider();
+        var created = Assert.IsType<StoreResult.Applied>(await new SessionStore(db, clock).CreateAsync(
+            new CreateSession(new LeadClaim(team), team, "brief", "default")));
+        return (new CommandQueue(db, clock), team.Value, created.Session.Id.Value);
     }
 }

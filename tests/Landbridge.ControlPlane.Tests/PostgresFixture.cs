@@ -75,8 +75,13 @@ public sealed class PostgresFixture : IAsyncLifetime
         // table: both are keyed per Team and COUNTED per Team (§9 check 10's forward rate
         // limit and its byte tally), so a row surviving a reset silently changes what a later
         // test measures — and a class sharing one static TeamId would inherit it.
+        //
+        // command_queue is here for a sharper version of the same: the drain claims the
+        // OLDEST queued row in the table, not one belonging to the test that is running.
+        // A row left behind is picked up by the next test's drain, which then reports
+        // "queued" for a command it never looked at.
         await db.Database.ExecuteSqlRawAsync(
-            "TRUNCATE sessions, worker_instances, registered_services, session_events, credentials, machines, machine_processes, lead_events, lead_teams, lead_machine_bindings, preview_mappings, relay_grants, team_forward_usage, session_usage, friction_reports, hub_queue RESTART IDENTITY CASCADE");
+            "TRUNCATE sessions, worker_instances, registered_services, session_events, credentials, machines, machine_processes, lead_events, lead_teams, lead_machine_bindings, preview_mappings, relay_grants, team_forward_usage, session_usage, friction_reports, hub_queue, command_queue RESTART IDENTITY CASCADE");
 
 
     }
