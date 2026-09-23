@@ -10,6 +10,10 @@ namespace Landbridge.ControlPlane;
 /// Accept path for the write queue. Façades insert <see cref="CommandRow.Queued"/>
 /// and wait (default) so today's MCP return shape is unchanged. Tests leave
 /// <c>Landbridge:WriteQueue</c> unset and keep calling <see cref="SessionStore"/>.
+///
+/// <para>Deduplication is opt-in: a caller that names its attempt gets retry safety,
+/// and one that does not gets a command per call. Nothing infers sameness from the
+/// payload, because two identical requests are not evidence of one.</para>
 /// </summary>
 public sealed class CommandQueue(LandbridgeDbContext db, TimeProvider clock, IConfiguration? config = null)
 {
@@ -23,6 +27,12 @@ public sealed class CommandQueue(LandbridgeDbContext db, TimeProvider clock, ICo
         string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
         || value == "1";
 
+    /// <param name="idempotencyKey">
+    /// The caller's name for this attempt, or null for none. A retry presenting the same
+    /// key attaches to the command already accepted; without one, every call is its own
+    /// command. Deliberately not derived from the payload — see
+    /// <see cref="CommandRow.IdempotencyKey"/>.
+    /// </param>
     public async Task<CommandRow> EnqueueAsync(
         string actorKind,
         Guid actorId,
@@ -30,15 +40,19 @@ public sealed class CommandQueue(LandbridgeDbContext db, TimeProvider clock, ICo
         Guid sessionId,
         string kind,
         object payload,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? idempotencyKey = null)
     {
         var json = JsonSerializer.Serialize(payload, Json);
-        var key = $"{kind}:{sessionId:D}:{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)))[..16]}";
-        var existing = await db.Commands.AsNoTracking()
-            .FirstOrDefaultAsync(
-                c => c.ActorKind == actorKind && c.ActorId == actorId && c.IdempotencyKey == key, ct);
-        if (existing is not null)
-            return existing;
+        var key = string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey;
+        if (key is not null)
+        {
+            var existing = await db.Commands.AsNoTracking()
+                .FirstOrDefaultAsync(
+                    c => c.ActorKind == actorKind && c.ActorId == actorId && c.IdempotencyKey == key, ct);
+            if (existing is not null)
+                return existing;
+        }
 
         var row = new CommandRow
         {
@@ -61,8 +75,11 @@ public sealed class CommandQueue(LandbridgeDbContext db, TimeProvider clock, ICo
         {
             await db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException) when (key is not null)
         {
+            // Two requests carrying the same key raced; the one that lost reads back the
+            // command the winner accepted. Unkeyed inserts cannot collide, so their
+            // failures are real and propagate.
             await tx.RollbackAsync(ct);
             db.ChangeTracker.Clear();
             return await db.Commands.AsNoTracking()
@@ -83,9 +100,11 @@ public sealed class CommandQueue(LandbridgeDbContext db, TimeProvider clock, ICo
         Guid sessionId,
         string kind,
         object payload,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? idempotencyKey = null)
     {
-        var row = await EnqueueAsync(actorKind, actorId, teamId, sessionId, kind, payload, ct);
+        var row = await EnqueueAsync(
+            actorKind, actorId, teamId, sessionId, kind, payload, ct, idempotencyKey);
         if (row.Status is CommandRow.Applied or CommandRow.Rejected)
             return row;
         return await WaitAsync(row.Id, ct);

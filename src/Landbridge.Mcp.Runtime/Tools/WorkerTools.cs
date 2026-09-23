@@ -80,7 +80,7 @@ public sealed class WorkerTools(
             var row = await queue.EnqueueAndWaitAsync(
                 CommandRow.WorkerActor, caller.Session.Value, caller.Team.Value, caller.Session.Value,
                 CommandRow.PullReceipt,
-                new CommandPayload(InstanceId: caller.Instance.Value, Nonce: Guid.NewGuid()), ct);
+                new CommandPayload(InstanceId: caller.Instance.Value), ct);
             if (row.Status == CommandRow.Rejected
                 && row.Reason is { } why
                 && why.Contains("incumbent", StringComparison.OrdinalIgnoreCase))

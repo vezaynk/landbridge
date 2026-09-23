@@ -237,5 +237,4 @@ public sealed record CommandPayload(
     string? Kind = null,
     string? Name = null,
     int? Port = null,
-    Guid? InstanceId = null,
-    Guid? Nonce = null);
+    Guid? InstanceId = null);

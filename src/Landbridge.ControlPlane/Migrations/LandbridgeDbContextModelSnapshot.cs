@@ -555,7 +555,6 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnName("claimed_at");
 
                     b.Property<string>("IdempotencyKey")
-                        .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("idempotency_key");
 
@@ -609,6 +608,7 @@ namespace Landbridge.ControlPlane.Migrations
 
                     b.HasIndex("ActorKind", "ActorId", "IdempotencyKey")
                         .IsUnique()
+                        .HasFilter("idempotency_key IS NOT NULL")
                         .HasDatabaseName("ix_command_queue_actor_kind_actor_id_idempotency_key");
 
                     b.ToTable("command_queue", (string)null);

@@ -292,7 +292,11 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
         {
             e.ToTable("command_queue");
             e.HasKey(c => c.Id);
-            e.HasIndex(c => new { c.ActorKind, c.ActorId, c.IdempotencyKey }).IsUnique();
+            // Unique only where a caller named the attempt: an unkeyed command is never
+            // deduplicated, so many may share (actor, null).
+            e.HasIndex(c => new { c.ActorKind, c.ActorId, c.IdempotencyKey })
+                .IsUnique()
+                .HasFilter("idempotency_key IS NOT NULL");
             e.HasIndex(c => c.Status).HasFilter("status = 'queued'");
             e.HasIndex(c => c.TeamId);
             e.HasIndex(c => c.SessionId);
