@@ -24,6 +24,7 @@ public static class CoreWriteEndpoints
         var g = app.MapGroup("/core/v1").RequireAuthorization();
         g.MapPost("/create-team", CreateTeamAsync);
         g.MapPost("/create-session", CreateSessionAsync);
+        g.MapPost("/conformance", StartConformanceAsync);
         g.MapPost("/sessions/{id}/stop", StopAsync);
         g.MapPost("/sessions/{id}/park", ParkAsync);
         g.MapPost("/sessions/{id}/input-response", InputResponseAsync);
@@ -86,6 +87,35 @@ public static class CoreWriteEndpoints
             return Results.Json(CoreStoreReply.From(result) with { Slug = slug, Reason = slug }, CoreWriteClient.Json);
         }
         return Store(result);
+    }
+
+    private static async Task<IResult> StartConformanceAsync(
+        HttpContext http, CoreConformanceBody body, SessionStore store, CancellationToken ct)
+    {
+        if (LandbridgeClaims.ToPrincipal(http.User) is not Principal.Human)
+            return Results.Json(new CoreConformanceReply(false, null, null, "human-only"),
+                CoreWriteClient.Json, statusCode: 403);
+        if (string.IsNullOrWhiteSpace(body.Profile) || body.Sessions is not { Count: > 0 })
+            return Results.Json(new CoreConformanceReply(false, null, null, "profile and sessions are required"),
+                CoreWriteClient.Json, statusCode: 400);
+        var run = body.RunId is { } given && given != Guid.Empty ? new TeamId(given) : TeamId.New();
+        var lead = new LeadClaim(run);
+        var created = new List<CoreConformanceSession>(body.Sessions.Count);
+        foreach (var spec in body.Sessions)
+        {
+            if (string.IsNullOrWhiteSpace(spec.Description))
+                return Results.Json(new CoreConformanceReply(false, run.Value, created, "description is required"),
+                    CoreWriteClient.Json, statusCode: 400);
+            var result = await store.CreateAsync(
+                new CreateSession(lead, run, spec.Description, body.Profile.Trim()), ct);
+            if (result is not StoreResult.Applied applied)
+                return Results.Json(new CoreConformanceReply(false, run.Value, created, "failed to create a dummy session"),
+                    CoreWriteClient.Json, statusCode: 500);
+            created.Add(new CoreConformanceSession(
+                applied.Session.Id.Value, spec.Kind, applied.Session.State.ToString(), applied.Session.Attempt));
+        }
+        return Results.Json(new CoreConformanceReply(true, run.Value, created, null),
+            CoreWriteClient.Json, statusCode: StatusCodes.Status201Created);
     }
 
     private static async Task<IResult> StopAsync(

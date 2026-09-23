@@ -117,6 +117,10 @@ public sealed record CoreStoreReply(
 }
 
 public sealed record CoreCreateSessionBody(string TeamId, string Description, string Profile, string? SessionId = null);
+public sealed record CoreConformanceSpec(string Kind, string Description);
+public sealed record CoreConformanceBody(string Profile, IReadOnlyList<CoreConformanceSpec> Sessions, Guid? RunId = null);
+public sealed record CoreConformanceSession(Guid SessionId, string Kind, string State, int Attempt);
+public sealed record CoreConformanceReply(bool Ok, Guid? RunId, IReadOnlyList<CoreConformanceSession>? Sessions, string? Reason);
 public sealed record CoreSessionBody(string TeamId, int? TtlSeconds = null, string? Answer = null, string? Text = null, string? Option = null, string? Message = null, string? ResultReference = null, string? Report = null, string? Kind = null, string? Name = null, int? Port = null);
 public sealed record CoreBindBody(string MachineId);
 public sealed record CoreProcessStartBody(string Name, string[] Spawn, string? WorkingDirectory, Dictionary<string, string>? Env, bool OpenStdin);
