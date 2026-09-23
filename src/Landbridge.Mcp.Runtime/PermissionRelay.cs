@@ -67,7 +67,7 @@ public static class PermissionRelay
             {
                 try
                 {
-                    await store.RecordClassifierAllowAsync(caller.Session, tool, proposedInput, ct)
+                    await store.RecordClassifierAllowAsync(caller.Session, tool, ct)
                         .ConfigureAwait(false);
                 }
                 catch

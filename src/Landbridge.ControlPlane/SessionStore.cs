@@ -366,15 +366,18 @@ public sealed class SessionStore(
     /// Records that the plane classifier allowed a tool call without opening a
     /// permission wait. State does not move. Failure to write must not block the
     /// allow itself — callers treat this as best-effort audit.
+    ///
+    /// <para>The tool is recorded; what it proposed to run is not. The audit answers
+    /// which tool was allowed without opening a wait, and a proposed input is the one
+    /// part of a call most likely to carry a secret.</para>
     /// </summary>
     public async Task RecordClassifierAllowAsync(
-        SessionId id, string tool, string proposedInput, CancellationToken ct = default)
+        SessionId id, string tool, CancellationToken ct = default)
     {
         var row = await db.Sessions.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
         if (row is null)
             return;
 
-        _ = proposedInput;
         var detail = string.IsNullOrWhiteSpace(tool) ? "classifier allow" : $"classifier allow: {tool}";
         AppendEvent(
             row.Id, row.TeamId, "ClassifierAllow", row.State, row.State,
@@ -495,8 +498,7 @@ public sealed class SessionStore(
     /// row waits — there is no degrade cold-start.</para>
     /// </summary>
     public async Task<StoreResult> DispatchNextAsync(
-        MachineSnapshot machine, WorkerInstanceId newInstance, CancellationToken ct = default,
-        IReadOnlyCollection<string>? connectedMachines = null)
+        MachineSnapshot machine, WorkerInstanceId newInstance, CancellationToken ct = default)
     {
         // Ready is last-value on machines.ready. The engine still re-checks Ready
         // and UnderBackPressure as §9 check 5's enforcement point.
@@ -512,7 +514,6 @@ public sealed class SessionStore(
         // the row lock is held to end of transaction, so concurrent dispatchers
         // skip it. Profile match is the SQL half of check 5: exact string, no fallback.
         var profiles = machine.DeclaredProfiles.ToArray();
-        _ = connectedMachines;
         var claimedId = await db.Database
             .SqlQuery<Guid>(
                 $"""

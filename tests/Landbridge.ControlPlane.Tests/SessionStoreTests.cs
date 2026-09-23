@@ -205,8 +205,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(
             await NewStore(db).DispatchNextAsync(Machine(), WorkerInstanceId.New()));
 
-        await NewStore(db).RecordClassifierAllowAsync(
-            id, "Bash", """{"command":"git status"}""");
+        await NewStore(db).RecordClassifierAllowAsync(id, "Bash");
 
         var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Working, row.State);
@@ -873,10 +872,10 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         var elsewhere = new MachineSnapshot(TestMachineIds.For("m2"), Ready: true, UnderBackPressure: false,
             new HashSet<string> { "default" });
         Assert.IsType<StoreResult.NotFound>(
-            await NewStore(db).DispatchNextAsync(elsewhere, WorkerInstanceId.New(), default, ["m2"]));
+            await NewStore(db).DispatchNextAsync(elsewhere, WorkerInstanceId.New()));
 
         var resumed = Assert.IsType<StoreResult.Applied>(
-            await NewStore(db).DispatchNextAsync(Machine(), WorkerInstanceId.New(), default, ["m1", "m2"]));
+            await NewStore(db).DispatchNextAsync(Machine(), WorkerInstanceId.New()));
         Assert.Equal("sess-keep", resumed.HarnessSessionRef);
     }
 
