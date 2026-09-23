@@ -821,7 +821,6 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     {
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(machineId, Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(machineId, Heartbeat("default"));
         registry.TrackDispatch(machineId, task);
         return registry;
     }
@@ -867,8 +866,4 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
     private static IReadOnlySet<string> Set(params string[] names) =>
         new HashSet<string>(names, StringComparer.Ordinal);
-
-    private static MachineHeartbeat Heartbeat(params string[] profiles) =>
-        new(Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 }

@@ -54,7 +54,7 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Dispatch_reads_columns_a_guid_heartbeat_does_not_fold_into_the_socket()
+    public async Task Dispatch_reads_columns_and_not_the_registry()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
@@ -63,9 +63,9 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
         var id = machineId;
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(id, new HashSet<string>(StringComparer.Ordinal), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(id, new MachineHeartbeat(
-            Ready: true, UnderBackPressure: false, default, 0, ["default"], clock.GetUtcNow()));
 
+        // Registered, so the machine is reachable — and still not ready, because
+        // readiness is a column and nothing has written one yet.
         Assert.Empty(await MachineLive.ReadyAsync(
             db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None));
 
