@@ -24,6 +24,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     public DbSet<HubQueueRow> HubQueue => Set<HubQueueRow>();
     public DbSet<MachineProcessRow> MachineProcesses => Set<MachineProcessRow>();
     public DbSet<CommandRow> Commands => Set<CommandRow>();
+    public DbSet<RunnerOutboxRow> RunnerOutbox => Set<RunnerOutboxRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "landbridge_session_events";
@@ -286,6 +287,15 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.Property(f => f.Seq).UseIdentityAlwaysColumn();
             e.HasIndex(f => f.At);
             e.HasIndex(f => f.TeamId);
+        });
+
+        b.Entity<RunnerOutboxRow>(e =>
+        {
+            e.ToTable("runner_outbox");
+            e.HasKey(r => r.Id);
+            e.Property(r => r.Id).UseIdentityAlwaysColumn();
+            e.Property(r => r.Payload).HasColumnType("jsonb");
+            e.HasIndex(r => r.MachineId).HasFilter("acked_at IS NULL");
         });
 
         b.Entity<CommandRow>(e =>

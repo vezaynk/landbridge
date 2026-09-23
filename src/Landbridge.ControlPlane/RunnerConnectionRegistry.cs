@@ -37,7 +37,7 @@ namespace Landbridge.ControlPlane;
 /// tasks and leaving its socket registered nowhere.</item>
 /// </list>
 /// </summary>
-public sealed class RunnerConnectionRegistry(TimeProvider clock)
+public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? outbox = null)
 {
     private readonly ConcurrentDictionary<Guid, RunnerConnection> _connections = new();
 
@@ -415,11 +415,16 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// </summary>
     public async Task<bool> SendAsync(Guid machineId, RunnerCommand command, CancellationToken ct)
     {
+        long? queued = null;
+        if (outbox is not null)
+            queued = await outbox.EnqueueAsync(machineId, command, ct);
         if (!_connections.TryGetValue(machineId, out var conn))
             return false;
         try
         {
             await conn.Send(command, ct);
+            if (queued is { } id)
+                await outbox!.AckAsync(machineId, id, ct);
             return true;
         }
         catch

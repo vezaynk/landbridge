@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.Json;
 using Landbridge.Contracts;
+using Microsoft.Extensions.Configuration;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Mcp.Auth;
@@ -28,6 +30,117 @@ public static class RunnerEndpoint
         // Part 3 phase 1: the same inbound frames, over HTTP. Commands still
         // ride the WebSocket. WS remains the dial landbridged uses today.
         app.MapPost("/runner/ingest", IngestAsync).RequireAuthorization();
+        app.MapGet("/runner/events", EventsAsync).RequireAuthorization();
+        app.MapPost("/runner/commands/{id:long}/ack", AckAsync).RequireAuthorization();
+    }
+
+    private static async Task EventsAsync(
+        HttpContext context,
+        RunnerOutbox outbox,
+        IConfiguration config,
+        CancellationToken ct)
+    {
+        if (LandbridgeClaims.ToPrincipal(context.User) is not Principal.Machine machine)
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
+
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        context.Response.ContentType = "text/event-stream";
+        context.Response.Headers.CacheControl = "no-cache";
+        await context.Response.StartAsync(ct);
+        await context.Response.WriteAsync(": open\n\n", ct);
+        await context.Response.Body.FlushAsync(ct);
+        var reader = outbox.Subscribe(machine.MachineId, out var unsubscribe);
+        try
+        {
+            // The only rows that can arrive twice are those enqueued between the
+            // subscribe above and this snapshot: the channel delivers each row once, so
+            // each id here can be hit at most once from the live stream. The set is
+            // therefore bounded by the backlog at connect time and only shrinks.
+            //
+            // A high-water mark would be smaller but wrong: two concurrent inserts can
+            // take ids 4 and 5 and commit out of order, leaving 4 uncommitted when the
+            // snapshot reads 5. Arriving below the mark, it would be dropped having
+            // never been sent.
+            var fromSnapshot = new HashSet<long>();
+            foreach (var row in await outbox.UnackedAsync(machine.MachineId, ct))
+            {
+                fromSnapshot.Add(row.Id);
+                await WriteCommandAsync(context, row, ct);
+            }
+
+            while (true)
+            {
+                // Waiting with a deadline rather than racing a Task.Delay: an abandoned
+                // wait would leave a registered waiter behind on every quiet pass.
+                using var beat = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                beat.CancelAfter(KeepAliveFor(config));
+                try
+                {
+                    if (!await reader.WaitToReadAsync(beat.Token))
+                        break;
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // Nothing to send. Say so anyway: a stream that is silent for long
+                    // enough is one an idle proxy will close out from under both ends.
+                    await context.Response.WriteAsync(": keepalive\n\n", ct);
+                    await context.Response.Body.FlushAsync(ct);
+                    continue;
+                }
+
+                while (reader.TryRead(out var row))
+                {
+                    if (fromSnapshot.Remove(row.Id))
+                        continue;
+                    // The WebSocket acks a command the moment it writes it, so a machine
+                    // holding both transports would otherwise be handed it twice. This
+                    // narrows that window; it does not close it, and a runner must still
+                    // treat an outbox id it has already run as a duplicate.
+                    if (await outbox.IsAckedAsync(row.Id, ct))
+                        continue;
+                    await WriteCommandAsync(context, row, ct);
+                }
+            }
+        }
+        finally
+        {
+            unsubscribe.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// How long the command stream may stay silent before it sends a comment frame to
+    /// keep idle intermediaries from closing it. Override with
+    /// <c>Landbridge:RunnerStreamKeepAliveMs</c>.
+    /// </summary>
+    private static TimeSpan KeepAliveFor(IConfiguration config) =>
+        int.TryParse(config["Landbridge:RunnerStreamKeepAliveMs"], out var ms) && ms > 0
+            ? TimeSpan.FromMilliseconds(ms)
+            : TimeSpan.FromSeconds(20);
+
+    private static async Task WriteCommandAsync(HttpContext context, RunnerOutboxRow row, CancellationToken ct)
+    {
+        var data = JsonSerializer.Serialize(new
+        {
+            id = row.Id,
+            kind = row.Kind,
+            frame = row.Payload,
+        });
+        await context.Response.WriteAsync($"id: {row.Id}\nevent: command\ndata: {data}\n\n", ct);
+        await context.Response.Body.FlushAsync(ct);
+    }
+
+    private static async Task<IResult> AckAsync(
+        HttpContext context, long id, RunnerOutbox outbox, CancellationToken ct)
+    {
+        if (LandbridgeClaims.ToPrincipal(context.User) is not Principal.Machine machine)
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        return await outbox.AckAsync(machine.MachineId, id, ct)
+            ? Results.NoContent()
+            : Results.NotFound();
     }
 
     private static async Task<IResult> IngestAsync(

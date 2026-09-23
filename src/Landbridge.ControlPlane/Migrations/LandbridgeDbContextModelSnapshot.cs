@@ -526,6 +526,51 @@ namespace Landbridge.ControlPlane.Migrations
                     b.ToTable("friction_reports", (string)null);
                 });
 
+            modelBuilder.Entity("Landbridge.ControlPlane.RunnerOutboxRow", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset?>("AckedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("acked_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("kind");
+
+                    b.Property<Guid>("MachineId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("machine_id");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<Guid?>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_runner_outbox");
+
+                    b.HasIndex("MachineId")
+                        .HasDatabaseName("ix_runner_outbox_machine_id")
+                        .HasFilter("acked_at IS NULL");
+
+                    b.ToTable("runner_outbox", (string)null);
+                });
+
             modelBuilder.Entity("Landbridge.ControlPlane.CommandRow", b =>
                 {
                     b.Property<Guid>("Id")

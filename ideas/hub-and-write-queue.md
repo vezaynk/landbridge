@@ -503,7 +503,7 @@ Core down (once ingest is the gateway): upserts and appends still land. Occupanc
 
 0. Machine last-value columns + process table (Part 1) — **done**, on the WS path.
 1. Inbound lifecycle events via `POST /runner/ingest` **while WS still carries commands** — the frame is the same §10 JSON. Heartbeats upsert `machines`. Events hit `RunnerEventSink`. `landbridged` still dials the WebSocket.
-2. Outbound outbox + runner SSE; `landbridged` prefers it when advertised.
+2. Outbound `runner_outbox` + `GET /runner/events` (replay unacked, then live). `POST /runner/commands/{id}/ack`. A successful socket write acks so today's runners are not replayed. `landbridged` still dials the WebSocket.
 3. Drop WS only when no supported runner speaks it.
 
 ---
