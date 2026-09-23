@@ -98,7 +98,7 @@
              enrolled credentials and stop refreshing them. Anything secret in
              this file is world-readable at 0644 in your LaunchAgents dir.
         <key>LANDBRIDGE_CONTROL_URL</key>
-        <string>wss://plane.example.com/runner</string>
+        <string>https://plane.example.com</string>
         -->
     </dict>
 

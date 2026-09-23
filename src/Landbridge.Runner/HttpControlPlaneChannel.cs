@@ -130,12 +130,12 @@ public sealed class HttpControlPlaneChannel : IControlPlaneChannel, IAsyncDispos
                 {
                     // Before the backoff, so the retry carries a refreshed token.
                     try { await rejected(ct); }
-                    catch (Exception e) { _log?.Invoke($"landbridged: token refresh after 401 failed: {e.Message}"); }
+                    catch (Exception e) { _log?.Invoke($"token refresh after 401 failed: {e.Message}"); }
                 }
             }
             catch (Exception e)
             {
-                _log?.Invoke($"landbridged: command stream dropped: {e.Message}");
+                _log?.Invoke($"control plane connection lost: {e.Message}");
             }
             finally
             {
@@ -166,6 +166,7 @@ public sealed class HttpControlPlaneChannel : IControlPlaneChannel, IAsyncDispos
         response.EnsureSuccessStatusCode();
 
         _streaming = true;
+        _log?.Invoke($"control plane connected: {_controlUrl}");
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream, Encoding.UTF8);
 
@@ -206,7 +207,7 @@ public sealed class HttpControlPlaneChannel : IControlPlaneChannel, IAsyncDispos
         }
         catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException)
         {
-            _log?.Invoke("landbridged: unreadable command frame on the stream; ignoring");
+            _log?.Invoke("control plane sent an unrecognized frame; ignoring");
             return;
         }
 
@@ -215,16 +216,27 @@ public sealed class HttpControlPlaneChannel : IControlPlaneChannel, IAsyncDispos
             // Outside this runner's §10 vocabulary — a plane newer than this binary. Ack it
             // anyway: replaying it on every reconnect would wedge the stream on a command
             // this runner will never understand.
-            _log?.Invoke("landbridged: command outside this runner's vocabulary; acknowledging unrun");
+            _log?.Invoke("control plane sent a command outside this runner's vocabulary; acknowledging unrun");
             await AckAsync(id, ct);
             return;
         }
 
         if (_onCommand is { } handler)
         {
-            // Ack only once the handler has returned, so a command interrupted by a crash
-            // or a dropped stream is replayed rather than silently lost.
-            await handler(command, ct);
+            try
+            {
+                // Ack only once the handler has returned, so a command interrupted by a
+                // crash or a dropped stream is replayed rather than silently lost.
+                await handler(command, ct);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // Unacked, so the next stream replays it. Left unacked deliberately:
+                // acknowledging a command that threw would drop the work silently, and a
+                // replay only recurs on reconnect rather than spinning here.
+                _log?.Invoke($"command handler threw: {e.Message}");
+                return;
+            }
         }
         await AckAsync(id, ct);
     }
@@ -237,12 +249,12 @@ public sealed class HttpControlPlaneChannel : IControlPlaneChannel, IAsyncDispos
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _tokenProvider());
             using var response = await _http.SendAsync(request, ct);
             if (!response.IsSuccessStatusCode)
-                _log?.Invoke($"landbridged: ack for command {id} refused ({(int)response.StatusCode})");
+                _log?.Invoke($"ack for command {id} refused ({(int)response.StatusCode})");
         }
         catch (Exception e) when (e is HttpRequestException or OperationCanceledException or ObjectDisposedException)
         {
             // Unacked means replayed, which the handler must already tolerate.
-            _log?.Invoke($"landbridged: ack for command {id} did not reach the plane: {e.Message}");
+            _log?.Invoke($"ack for command {id} did not reach the plane: {e.Message}");
         }
     }
 

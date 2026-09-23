@@ -493,7 +493,7 @@ public sealed class RunnerDaemon
     ///
     /// <para>The retry sleeps on the INJECTED clock, so a test that hands the daemon a
     /// fake time provider must advance it for a parked pump to wake — the same contract
-    /// as <see cref="WebSocketControlPlaneChannel"/>'s reconnect backoff.</para>
+    /// as <see cref="HttpControlPlaneChannel"/>'s reconnect backoff.</para>
     /// </summary>
     private async Task PumpRingAsync(CancellationToken ct)
     {

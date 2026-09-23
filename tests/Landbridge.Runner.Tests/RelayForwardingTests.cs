@@ -15,7 +15,7 @@ namespace Landbridge.Runner.Tests;
 /// <summary>
 /// The landbridged relay data planes (spec §8.3), each end driven in isolation
 /// against a <em>fake</em> relay — a minimal loopback WebSocket server, the same
-/// shape <see cref="WebSocketControlPlaneChannelTests"/> uses for the control
+/// shape <see cref="HttpControlPlaneChannelTests"/> uses for the control
 /// plane. The consumer plane binds loopback-only, reports its bound port via
 /// <c>forward-opened</c>, and splices an accepted TCP connection to the relay; the
 /// producer plane dials a local service and splices it. Both emit

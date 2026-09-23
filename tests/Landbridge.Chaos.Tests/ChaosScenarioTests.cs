@@ -714,12 +714,12 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         });
         await fleet.StartPlaneOnlyAsync(ct);
 
-        // The socket the closed laptop left behind, registered before landbridged exists so that
+        // The stream the closed laptop left behind, registered before landbridged exists so that
         // the daemon's connection is the one that supersedes.
         using var stale = await fleet.DialRunnerAsync(ct);
         Assert.True(
             await fleet.WaitForPlaneLineAsync(
-                l => l.Contains("runner connected:", StringComparison.Ordinal), TransitionBudget) is not null,
+                l => l.Contains("runner stream opened:", StringComparison.Ordinal), TransitionBudget) is not null,
             "the plane never registered the stale connection, so there was no overlap to test\n" +
             await fleet.DiagnoseAsync([], ct));
 
@@ -727,7 +727,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         await fleet.StartLandbridgedAsync(ct);
         Assert.True(
             await fleet.WaitForPlaneLineAsync(
-                l => l.Contains("while an earlier connection was still registered", StringComparison.Ordinal),
+                l => l.Contains("while an earlier one was still registered", StringComparison.Ordinal),
                 TransitionBudget) is not null,
             "the plane never saw two connections for this machine, so the overlap this scenario " +
             "is about never existed\n" + await fleet.DiagnoseAsync([], ct));
@@ -742,12 +742,12 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         var beforeTeardown = (await fleet.FactsAsync(held, ct))!.Value;
         Assert.Equal(0, beforeTeardown.InfrastructureRequeues);
 
-        // The half-open socket finally errors out, and its endpoint runs the teardown that
+        // The half-open stream finally errors out, and its endpoint runs the teardown that
         // used to take the live connection down with it.
         stale.Abort();
         Assert.True(
             await fleet.WaitForPlaneLineAsync(
-                l => l.Contains("superseded runner connection closed", StringComparison.Ordinal),
+                l => l.Contains("superseded runner stream closed", StringComparison.Ordinal),
                 TransitionBudget) is not null,
             "the stale connection's teardown never ran, or ran as an ordinary disconnect — " +
             "either way this scenario asserted nothing\n" + await fleet.DiagnoseAsync([held], ct));

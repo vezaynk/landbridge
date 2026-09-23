@@ -14,7 +14,7 @@ internal sealed class LandbridgedHost(
     string machineId,
     string channelMode,
     ILogger<LandbridgedHost> log,
-    WebSocketControlPlaneChannel? wsChannel = null,
+    HttpControlPlaneChannel? planeChannel = null,
     LocalIdentityListener? identity = null,
     MachineTokenRefresher? refresher = null,
     HttpClient? refreshHttp = null,
@@ -23,7 +23,7 @@ internal sealed class LandbridgedHost(
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _ = daemon.StartAsync();
-        wsChannel?.Start((command, ct) => daemon.HandleAsync(command, ct));
+        planeChannel?.Start((command, ct) => daemon.HandleAsync(command, ct));
         var identityBit = identity is null
             ? "identity=unbound"
             : $"identity=http://127.0.0.1:{LocalIdentityListener.Port}";
@@ -40,8 +40,8 @@ internal sealed class LandbridgedHost(
         if (identity is not null)
             await identity.DisposeAsync();
         await processes.DisposeAsync();
-        if (wsChannel is not null)
-            await wsChannel.DisposeAsync();
+        if (planeChannel is not null)
+            await planeChannel.DisposeAsync();
         if (refresher is not null)
             await refresher.DisposeAsync();
         refreshHttp?.Dispose();

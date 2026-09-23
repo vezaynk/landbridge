@@ -19,7 +19,7 @@ namespace Landbridge.Runner;
 /// exchange answers with the first, so a box is still told one URL. Both are
 /// persisted so the daemon can refresh with
 /// no further argv, and so the runner WebSocket URL can be derived from it when
-/// <c>LANDBRIDGE_CONTROL_URL</c> is not set (see <see cref="CredentialStore.DeriveRunnerWsUrl"/>).</para>
+/// <c>LANDBRIDGE_CONTROL_URL</c> is not set.</para>
 /// </summary>
 internal sealed record MachineCredentialFile(
     string MachineId,
@@ -144,30 +144,6 @@ internal static class CredentialStore
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(tmp, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         File.Move(tmp, path, overwrite: true);
-    }
-
-    /// <summary>
-    /// The runner WebSocket URL derived from the plane's HTTP base (§10): the
-    /// scheme flips http→ws / https→wss and the path becomes <c>/runner</c>.
-    /// landbridged dials <c>LANDBRIDGE_CONTROL_URL</c> when set; this is the default when
-    /// it is not, so a file-enrolled daemon needs no second URL.
-    /// </summary>
-    public static Uri DeriveRunnerWsUrl(string httpBase)
-    {
-        var uri = new Uri(httpBase);
-        var b = new UriBuilder(uri)
-        {
-            Scheme = string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ? "wss" : "ws",
-            Path = uri.AbsolutePath.TrimEnd('/') + "/runner",
-            Query = "",
-            Fragment = "",
-        };
-        // A base with no explicit port carries the http/https default in the
-        // builder; drop it after the scheme flip so we don't emit :443/:80 on the
-        // ws(s) URL. An explicit non-default port is preserved.
-        if (uri.IsDefaultPort)
-            b.Port = -1;
-        return b.Uri;
     }
 
     /// <summary>

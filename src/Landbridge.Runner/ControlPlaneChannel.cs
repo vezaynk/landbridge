@@ -11,8 +11,8 @@ namespace Landbridge.Runner;
 /// command queue is explicitly not built — §10, §15). Runner→control-plane
 /// buffering is the caller's <see cref="OutboundEventRing"/>, not this channel.
 ///
-/// The production transport is <see cref="WebSocketControlPlaneChannel"/>
-/// (outbound ws/wss); tests use <see cref="InMemoryControlPlaneChannel"/>.
+/// The production transport is <see cref="HttpControlPlaneChannel"/>
+/// (outbound HTTP); tests use <see cref="InMemoryControlPlaneChannel"/>.
 /// </summary>
 public interface IControlPlaneChannel
 {

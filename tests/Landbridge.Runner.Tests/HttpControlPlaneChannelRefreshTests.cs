@@ -1,29 +1,26 @@
-using System.Net.WebSockets;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// The refresh/reconnect seam of the real control-plane channel (spec §5, §13):
-/// the channel presents the CURRENT machine token on every dial, and a 401 on
-/// the handshake triggers the refresh hook so the retry carries a fresh token.
-/// End-to-end against a loopback control plane that gates the WebSocket upgrade
-/// on the presented bearer, so the whole seam (token provider → 401 detection →
-/// hook → reconnect) is exercised for real.
+/// The refresh/reconnect seam of the real control-plane channel (spec §5, §13): the
+/// channel presents the CURRENT machine token on every request, and a 401 opening the
+/// command stream triggers the refresh hook so the retry carries a fresh one. End to end
+/// against a loopback plane that gates <c>/runner/events</c> on the presented bearer, so
+/// the whole seam — token provider → 401 detection → hook → reconnect — runs for real.
 /// </summary>
-public class WebSocketControlPlaneChannelRefreshTests
+public class HttpControlPlaneChannelRefreshTests
 {
     /// <summary>
-    /// A loopback control plane whose <c>/runner</c> accepts the upgrade only when
-    /// the presented bearer equals <see cref="Expected"/>; anything else is 401.
-    /// Records every presented bearer so the test can assert what each dial carried.
+    /// A loopback plane whose <c>/runner/events</c> is held open only when the presented
+    /// bearer equals <see cref="Expected"/>; anything else is 401. Records every presented
+    /// bearer so a test can assert what each attempt carried.
     /// </summary>
-    private sealed class GatedRunnerServer : IAsyncDisposable
+    private sealed class GatedStreamServer : IAsyncDisposable
     {
         private readonly WebApplication _app;
         private readonly object _gate = new();
@@ -33,17 +30,16 @@ public class WebSocketControlPlaneChannelRefreshTests
 
         public IReadOnlyList<string> Presented { get { lock (_gate) return _presented.ToArray(); } }
 
-        private GatedRunnerServer(WebApplication app) => _app = app;
+        private GatedStreamServer(WebApplication app) => _app = app;
 
-        public static async Task<GatedRunnerServer> StartAsync(string expected, CancellationToken ct)
+        public static async Task<GatedStreamServer> StartAsync(string expected, CancellationToken ct)
         {
             var builder = WebApplication.CreateBuilder();
             builder.Logging.ClearProviders();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             var app = builder.Build();
-            var server = new GatedRunnerServer(app) { Expected = expected };
-            app.UseWebSockets();
-            app.Map("/runner", async (HttpContext http) =>
+            var server = new GatedStreamServer(app) { Expected = expected };
+            app.MapGet("/runner/events", async (HttpContext http) =>
             {
                 var auth = http.Request.Headers.Authorization.ToString();
                 const string prefix = "Bearer ";
@@ -54,30 +50,26 @@ public class WebSocketControlPlaneChannelRefreshTests
 
                 if (presented != server.Expected)
                 {
-                    http.Response.StatusCode = StatusCodes.Status401Unauthorized; // reject the upgrade
+                    http.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
                 }
-                if (!http.WebSockets.IsWebSocketRequest)
-                {
-                    http.Response.StatusCode = StatusCodes.Status400BadRequest;
-                    return;
-                }
-                using var socket = await http.WebSockets.AcceptWebSocketAsync();
-                var buffer = new byte[1024];
+
+                http.Response.ContentType = "text/event-stream";
+                await http.Response.StartAsync(http.RequestAborted);
+                await http.Response.WriteAsync(": open\n\n", http.RequestAborted);
+                await http.Response.Body.FlushAsync(http.RequestAborted);
                 try
                 {
-                    while (socket.State == WebSocketState.Open && !http.RequestAborted.IsCancellationRequested)
-                        await socket.ReceiveAsync(buffer, http.RequestAborted); // hold the connection open
+                    // Hold it open: an accepted stream is what IsConnected reports.
+                    await Task.Delay(Timeout.InfiniteTimeSpan, http.RequestAborted);
                 }
                 catch (OperationCanceledException) { }
-                catch (WebSocketException) { }
             });
             await app.StartAsync(ct);
             return server;
         }
 
-        public Uri WsUrl() =>
-            new(_app.Urls.First(u => u.StartsWith("http://")).Replace("http://", "ws://") + "/runner");
+        public Uri PlaneUrl() => new(_app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal)));
 
         public async ValueTask DisposeAsync() => await _app.DisposeAsync();
     }
@@ -89,8 +81,8 @@ public class WebSocketControlPlaneChannelRefreshTests
         var ct = cts.Token;
 
         // The plane accepts only "access-1"; the daemon starts holding the stale
-        // "access-0", so its first dial is rejected 401.
-        await using var server = await GatedRunnerServer.StartAsync(expected: "access-1", ct);
+        // "access-0", so its first attempt is rejected 401.
+        await using var server = await GatedStreamServer.StartAsync(expected: "access-1", ct);
 
         var clock = TimeProvider.System;
         var initial = new MachineCredentialFile(
@@ -102,12 +94,13 @@ public class WebSocketControlPlaneChannelRefreshTests
         await using var refresher = new MachineTokenRefresher(
             initial,
             // The refresh mints exactly the token the plane will accept.
-            (_, _) => Task.FromResult<RefreshResponse?>(new RefreshResponse("access-1", clock.GetUtcNow() + TimeSpan.FromHours(1))),
+            (_, _) => Task.FromResult<RefreshResponse?>(
+                new RefreshResponse("access-1", clock.GetUtcNow() + TimeSpan.FromHours(1))),
             c => { lock (persistLock) persisted.Add(c); },
             clock);
 
-        await using var channel = new WebSocketControlPlaneChannel(
-            server.WsUrl(),
+        await using var channel = new HttpControlPlaneChannel(
+            server.PlaneUrl(),
             () => refresher.CurrentAccessToken,
             clock,
             log: null,
@@ -117,10 +110,10 @@ public class WebSocketControlPlaneChannelRefreshTests
         Assert.True(await TestKit.WaitUntilAsync(() => channel.IsConnected, TimeSpan.FromSeconds(15)),
             "the channel never connected after the 401 refresh");
 
-        Assert.Equal("access-1", refresher.CurrentAccessToken);          // the hook swapped the token
+        Assert.Equal("access-1", refresher.CurrentAccessToken);           // the hook swapped the token
         lock (persistLock) Assert.Contains(persisted, p => p.AccessToken == "access-1"); // and persisted it
-        Assert.Contains("access-0", server.Presented);                   // the first dial carried the stale token
-        Assert.Contains("access-1", server.Presented);                   // the reconnect carried the refreshed one
+        Assert.Contains("access-0", server.Presented);                    // the first attempt was stale
+        Assert.Contains("access-1", server.Presented);                    // the retry carried the new one
     }
 
     [Fact]
@@ -129,13 +122,13 @@ public class WebSocketControlPlaneChannelRefreshTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var ct = cts.Token;
 
-        // The plane rejects everything, so the channel keeps retrying. With the
-        // string constructor there is no refresh hook: every dial must carry the
-        // one fixed env token, unchanged.
-        await using var server = await GatedRunnerServer.StartAsync(expected: "the-only-acceptable-token", ct);
+        // The plane rejects everything, so the channel keeps retrying. With the string
+        // constructor there is no refresh hook: every attempt must carry the one fixed
+        // env token, unchanged.
+        await using var server = await GatedStreamServer.StartAsync(expected: "the-only-acceptable-token", ct);
 
-        await using var channel = new WebSocketControlPlaneChannel(
-            server.WsUrl(), "env-token", TimeProvider.System);
+        await using var channel = new HttpControlPlaneChannel(
+            server.PlaneUrl(), "env-token", TimeProvider.System);
         channel.Start((_, _) => Task.CompletedTask);
 
         Assert.True(await TestKit.WaitUntilAsync(() => server.Presented.Count >= 2, TimeSpan.FromSeconds(15)),

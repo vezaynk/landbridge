@@ -379,7 +379,7 @@ foreach (var harness in devHarnesses)
         .WithOtlpExporter()
         .WithEnvironment(async ctx =>
         {
-            ctx.EnvironmentVariables["LANDBRIDGE_CONTROL_URL"] = $"ws://{dockerHost}:{mcpPort}/runner";
+            ctx.EnvironmentVariables["LANDBRIDGE_CONTROL_URL"] = $"http://{dockerHost}:{mcpPort}";
             var seed = await ReadSeedWithRetryAsync(seedPath, TimeSpan.FromSeconds(30));
             ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_TOKEN"] = seed.MachineToken;
             ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_ID"] = seed.MachineId;

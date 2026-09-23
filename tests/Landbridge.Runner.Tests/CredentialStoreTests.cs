@@ -95,14 +95,4 @@ public class CredentialStoreTests
 
         Assert.Equal(expected, CredentialStore.ResolveStateDir(arg, env, xdg, home));
     }
-
-    [Theory]
-    [InlineData("https://plane.example.com", "wss://plane.example.com/runner")]
-    [InlineData("https://plane.example.com/", "wss://plane.example.com/runner")]
-    [InlineData("http://localhost:5000", "ws://localhost:5000/runner")]
-    [InlineData("http://127.0.0.1:8080/", "ws://127.0.0.1:8080/runner")]
-    public void DeriveRunnerWsUrl_flips_scheme_and_appends_runner(string httpBase, string expected)
-    {
-        Assert.Equal(expected, CredentialStore.DeriveRunnerWsUrl(httpBase).ToString());
-    }
 }

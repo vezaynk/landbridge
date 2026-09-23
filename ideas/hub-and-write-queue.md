@@ -501,10 +501,10 @@ Core down (once ingest is the gateway): upserts and appends still land. Occupanc
 
 ## Phases
 
-0. Machine last-value columns + process table (Part 1) — **done**, on the WS path.
-1. Inbound lifecycle events via `POST /runner/ingest` **while WS still carries commands** — the frame is the same §10 JSON. Heartbeats upsert `machines`. Events hit `RunnerEventSink`. `landbridged` still dials the WebSocket.
-2. Outbound `runner_outbox` + `GET /runner/events` (replay unacked, then live). `POST /runner/commands/{id}/ack`. A successful socket write acks so today's runners are not replayed. `landbridged` still dials the WebSocket.
-3. Drop WS only when no supported runner speaks it.
+0. Machine last-value columns + process table (Part 1) — **done**.
+1. HTTP is the transport — **done**. `landbridged` POSTs §10 frames to `/runner/ingest` (heartbeats upsert `machines`, events hit `RunnerEventSink`) and takes commands from `GET /runner/events`, acking each at `POST /runner/commands/{id}/ack`. That stream is the machine's connection: the plane registers it, dispatches onto it, and requeues what it held when it ends.
+
+   The staged WS coexistence this section used to describe was dropped rather than built. It existed to avoid breaking runners already in the field, and there were none — so it was paying for a negotiation mechanism and a duplicate-delivery hazard (a machine holding both transports) to buy nothing. Cutting straight over also fixed a defect: a socket write acked the outbox row immediately, so a command lost between plane and runner was gone. Delivery is now at-least-once and acknowledged after the handler returns, and a runner must tolerate seeing an outbox id twice.
 
 ---
 
