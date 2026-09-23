@@ -186,16 +186,6 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? o
         return Current(token) is not null;
     }
 
-    /// <summary>
-    /// Same as the token overload for tests driving a single connection per machine.
-    /// Does not write facts — call <see cref="HubOutbox.WriteHeartbeatAsync"/>.
-    /// </summary>
-    public void ApplyHeartbeat(Guid machineId, MachineHeartbeat heartbeat)
-    {
-        _ = heartbeat;
-        _ = _connections.ContainsKey(machineId);
-    }
-
 
 
     /// <summary>The connection <paramref name="token"/> names, or null once it has been

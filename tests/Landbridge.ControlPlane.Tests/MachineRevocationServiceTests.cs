@@ -44,7 +44,6 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
         registry.Register(
             machineId, Profiles(), (_, _) => Task.CompletedTask,
             close: _ => { hungUp = true; return Task.CompletedTask; });
-        registry.ApplyHeartbeat(machineId, Ready(machineId));
 
         // A task dispatched to this machine, exactly as the dispatch loop would leave it:
         // working, tracked on the connection, with a live worker token in the box's hands.
@@ -103,7 +102,6 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
 
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(machineId, Profiles(), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(machineId, Ready(machineId));
         var (task, workerToken) = await DispatchOntoAsync(clock, team, machineId, registry);
 
         // The plane forgets the dispatch — a machine that dropped, or a plane that restarted.
@@ -135,11 +133,9 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
 
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(doomed, Profiles(), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(doomed, Ready(doomed));
         var (_, doomedWorker) = await DispatchOntoAsync(clock, team, doomed, registry);
 
         registry.Register(spared, Profiles(), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(spared, Ready(spared));
         var (sparedTask, sparedWorker) = await DispatchOntoAsync(clock, team, spared, registry);
 
         await RevokeAsync(clock, registry, doomed);
@@ -242,10 +238,6 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
     }
 
     private static IReadOnlySet<string> Profiles() => new HashSet<string>(StringComparer.Ordinal) { "default" };
-
-    private static MachineHeartbeat Ready(Guid machineId) =>
-        new(Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow);
 
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)
     {

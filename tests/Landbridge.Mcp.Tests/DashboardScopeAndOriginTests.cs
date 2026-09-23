@@ -402,10 +402,6 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         registry.Register(
             machineId, new HashSet<string>(StringComparer.Ordinal) { "default" },
             (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(
-            machineId,
-            new MachineHeartbeat(Ready: true, UnderBackPressure: false,
-                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
         var human = await IssueHumanTokenAsync(ct);
         using var client = Client(app);

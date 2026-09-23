@@ -230,10 +230,6 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
                 if (harness.Answer?.Invoke(read) is { } reply)
                     await sink.HandleAsync(reply, ct);
             });
-            // Ready + a live snapshot, which is what the relay's connectivity check reads.
-            registry.ApplyHeartbeat(Machine, new MachineHeartbeat(
-                Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-                RunningSessions: 0, Profiles: ["default"], At: clock.GetUtcNow(), TranscriptsServable: true));
         }
 
         return harness;

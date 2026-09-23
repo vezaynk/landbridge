@@ -53,7 +53,6 @@ public sealed class MachineRevokeDashboardTests(PostgresFixture pg) : IAsyncLife
         // The machine is dialed in, so it shows on the view — with the control.
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
         registry.Register(machineId, Profiles(), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(machineId, Ready());
 
         var view = await GetAuthedAsync(app, "/dashboard/machines", ct);
         Assert.Contains("/dashboard/machines/revoke", view, StringComparison.Ordinal);
@@ -216,10 +215,6 @@ public sealed class MachineRevokeDashboardTests(PostgresFixture pg) : IAsyncLife
             .GetLeftPart(UriPartial.Authority);
 
     private static IReadOnlySet<string> Profiles() => new HashSet<string>(StringComparer.Ordinal) { "default" };
-
-    private static MachineHeartbeat Ready() =>
-        new(Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow);
 
     private WebApplication BuildPlane()
     {
