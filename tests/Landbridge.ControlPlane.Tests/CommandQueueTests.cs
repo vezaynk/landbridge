@@ -2,6 +2,7 @@ using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -173,4 +174,50 @@ public sealed class CommandQueueTests(PostgresFixture pg) : IAsyncLifetime
             new CreateSession(new LeadClaim(team), team, "brief", "default")));
         return (new CommandQueue(db, clock), team.Value, created.Session.Id.Value);
     }
+
+    /// <summary>
+    /// With no Core draining, the wait gives up on its own clock and answers with the
+    /// command as it stands rather than holding the caller until their request times out.
+    ///
+    /// <para>That inversion is the point: the queue exists so a façade can accept work
+    /// Core cannot currently apply, and an unbounded wait turns every mutation into a
+    /// full-timeout hang exactly when Core is down. The row is durable once enqueued, so
+    /// "accepted, here is the id" is both true and pollable.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task The_wait_gives_up_on_its_own_clock_when_nothing_drains()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var (_, team, session) = await SeededQueueAsync(db);
+        var queue = new CommandQueue(db, new FakeTimeProvider(), Config(("Landbridge:WriteQueueWaitMs", "200")));
+
+        using var caller = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var row = await queue.EnqueueAndWaitAsync(
+            CommandRow.LeadActor, Guid.NewGuid(), team, session,
+            CommandRow.StopSession, new CommandPayload(TtlSeconds: 30), caller.Token);
+
+        Assert.Equal(CommandRow.Queued, row.Status);
+        Assert.False(caller.IsCancellationRequested, "the caller's own token should be untouched");
+    }
+
+    /// <summary>The caller aborting is still an error — only the budget is a soft answer.</summary>
+    [SkippableFact]
+    public async Task A_cancelled_caller_still_throws()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var (_, team, session) = await SeededQueueAsync(db);
+        var queue = new CommandQueue(db, new FakeTimeProvider(), Config(("Landbridge:WriteQueueWaitMs", "30000")));
+
+        using var caller = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queue.EnqueueAndWaitAsync(
+            CommandRow.LeadActor, Guid.NewGuid(), team, session,
+            CommandRow.StopSession, new CommandPayload(TtlSeconds: 30), caller.Token));
+    }
+
+    private static IConfiguration Config(params (string Key, string Value)[] values) =>
+        new ConfigurationBuilder()
+            .AddInMemoryCollection(values.Select(v => new KeyValuePair<string, string?>(v.Key, v.Value)))
+            .Build();
 }
