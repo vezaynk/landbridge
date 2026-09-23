@@ -9,7 +9,8 @@ namespace Landbridge.Runner.Tests;
 /// <c>bind_machine</c>. Port 19378 is the production well-known; tests bind
 /// ephemeral loopback so they do not collide with a running landbridged.
 /// One collection so HttpListener's process-wide prefix table is not mutated
-/// by two tests at once (Close throws AddressAlreadyInUse on Linux).
+/// by two tests at once — Close throws AddressAlreadyInUse out of that table, on
+/// macOS as well as Linux, which is why every teardown here goes through Release.
 /// </summary>
 [Collection(nameof(LocalIdentityListenerTests))]
 public class LocalIdentityListenerTests
@@ -110,8 +111,30 @@ public class LocalIdentityListenerTests
         }
         finally
         {
-            occupied.Stop();
-            occupied.Close();
+            Release(occupied);
+        }
+    }
+
+    /// <summary>
+    /// Lets go of a listener without letting the teardown fail the test.
+    ///
+    /// <para><c>HttpListener.Close</c> re-enters the process-wide prefix table
+    /// (<c>RemoveListener</c> → <c>RemovePrefixInternal</c> → <c>GetEPListener</c>) and
+    /// throws <c>Address already in use</c> from there — the hazard this class's own
+    /// summary notes for Linux, observed on macOS in CI. It happens after the assertions
+    /// have passed, so an unguarded Close turns a green test red on the way out and the
+    /// failure names a port rather than anything the test was about.</para>
+    /// </summary>
+    private static void Release(HttpListener listener)
+    {
+        try
+        {
+            listener.Stop();
+            listener.Close();
+        }
+        catch (Exception e) when (e is HttpListenerException or ObjectDisposedException)
+        {
+            // Nothing to salvage: the listener is going away either way.
         }
     }
 
@@ -150,8 +173,10 @@ public class LocalIdentityListenerTests
             catch (Exception e) when (e is HttpListenerException or SocketException)
             {
                 // Something took the port in the gap between the probe releasing it and
-                // this taking it. Pick another rather than failing the test on it.
-                listener.Close();
+                // this taking it. Pick another rather than failing the test on it —
+                // through Release, because a Close that throws here would escape the very
+                // retry loop it is part of.
+                Release(listener);
             }
         }
 

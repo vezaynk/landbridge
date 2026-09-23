@@ -71,16 +71,20 @@ public sealed class ControlPlaneForwardUsageReporter : IForwardUsageReporter, IH
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_timer is not null)
-            await _timer.DisposeAsync();
+        var timer = Interlocked.Exchange(ref _timer, null);
+        if (timer is not null)
+            await timer.DisposeAsync();
         // The tail: a graceful shutdown is the last chance to report what is still buffered.
         // Uses the caller's token, not the cancelled one, so shutdown does not cancel its own
         // final flush.
         await FlushSafeAsync(cancellationToken);
-        if (_cts is not null)
+        var cts = Interlocked.Exchange(ref _cts, null);
+        // Taken out of the field first so a second stop finds nothing: the host stops a
+        // hosted service on shutdown and again on dispose.
+        if (cts is not null)
         {
-            await _cts.CancelAsync();
-            _cts.Dispose();
+            await cts.CancelAsync();
+            cts.Dispose();
         }
     }
 
