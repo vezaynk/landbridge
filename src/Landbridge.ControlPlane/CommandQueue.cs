@@ -110,18 +110,52 @@ public sealed class CommandQueue(LandbridgeDbContext db, TimeProvider clock, ICo
         return await WaitAsync(row.Id, ct);
     }
 
+    /// <summary>
+    /// How long a façade will wait for Core to resolve a command before answering with
+    /// what it knows. Default 10s, overridable with <c>Landbridge:WriteQueueWaitMs</c>.
+    /// </summary>
+    public TimeSpan WaitBudget =>
+        int.TryParse(config?["Landbridge:WriteQueueWaitMs"], out var ms) && ms > 0
+            ? TimeSpan.FromMilliseconds(ms)
+            : TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Waits for Core to apply or reject, and gives up on its own clock rather than the
+    /// request's.
+    ///
+    /// <para>An unbounded wait makes every mutation hang for the caller's full timeout
+    /// whenever Core is down — which is backwards, because the queue exists so that a
+    /// façade can accept work Core is not currently able to apply. The row is durable the
+    /// moment it is enqueued, so on expiry this returns it as it stands: the caller
+    /// reports <c>accepted</c> with a command id, which is both true and pollable
+    /// (<c>GET /commands</c>). Only the caller's own cancellation is an error.</para>
+    /// </summary>
     public async Task<CommandRow> WaitAsync(Guid commandId, CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(WaitBudget);
+        while (true)
         {
             var row = await db.Commands.AsNoTracking()
                 .FirstOrDefaultAsync(c => c.Id == commandId, ct)
                 ?? throw new InvalidOperationException($"command {commandId} disappeared");
             if (row.Status is CommandRow.Applied or CommandRow.Rejected)
                 return row;
-            await Task.Delay(50, ct);
+            if (budget.IsCancellationRequested)
+            {
+                ct.ThrowIfCancellationRequested();
+                return row;
+            }
+
+            try
+            {
+                await Task.Delay(50, budget.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                ct.ThrowIfCancellationRequested();
+            }
         }
-        throw new OperationCanceledException(ct);
     }
 
     public Task<CommandRow?> GetAsync(Guid id, CancellationToken ct) =>
