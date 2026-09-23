@@ -78,7 +78,10 @@ public sealed class ForwardTeardownService(
         // (§10 — every message carries one), so it must name the same one.
         if (registry.MachineFor(end) is not { } machine)
             return;
-        if (!await registry.SendAsync(machine, new CloseForwardCommand(end, forward.ForwardId), ct))
+        // Best-effort: a teardown that arrives after the machine reconnects is closing a
+        // forward that died with the connection, so there is nothing to replay it onto.
+        if (!await registry.SendAsync(
+                machine, new CloseForwardCommand(end, forward.ForwardId), ct, durable: false))
             logger.LogInformation(
                 "forward {ForwardId}: could not reach {Role} machine {Machine} to close it",
                 forward.ForwardId, role, machine);

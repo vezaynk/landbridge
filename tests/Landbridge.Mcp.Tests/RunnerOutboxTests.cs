@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -171,6 +172,86 @@ public sealed class RunnerOutboxTests(PostgresFixture pg) : IAsyncLifetime
                 return line["data: ".Length..];
         }
         return null;
+    }
+
+    /// <summary>
+    /// The row carries the dispatch span's traceparent (§1). The outbox is the command's
+    /// only carrier once it is the transport, so a traceparent dropped at enqueue is a
+    /// trace that ends at the plane — invisible, because the command still arrives.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_enqueued_command_carries_the_current_trace()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = cts.Token;
+        await using var app = BuildCore();
+        await app.StartAsync(ct);
+
+        await using var db = pg.NewContext();
+        var tokens = new TokenService(db, TimeProvider.System);
+        var creds = await tokens.ExchangeEnrollmentAsync(
+            (await tokens.IssueEnrollmentTokenAsync(ct)).Token, new MachineDeclaration("traced", "linux"), ct);
+        Assert.NotNull(creds);
+
+        // An ActivityListener is what makes Activity.Current non-null: without one
+        // sampling it, StartActivity returns null and the test would pass vacuously.
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = _ => true,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+        };
+        ActivitySource.AddActivityListener(listener);
+        using var source = new ActivitySource("outbox-trace-test");
+
+        string? expected;
+        using (var span = source.StartActivity("dispatch"))
+        {
+            Assert.NotNull(span);
+            expected = span!.Id;
+            await app.Services.GetRequiredService<RunnerOutbox>()
+                .EnqueueAsync(creds!.MachineId, new KillCommand(SessionId.New()), ct);
+        }
+
+        await using var check = pg.NewContext();
+        var row = Assert.Single(await check.RunnerOutbox.AsNoTracking().ToListAsync(ct));
+        Assert.NotNull(RunnerWire.DecodeCommand(row.Payload, out var traceparent));
+        Assert.Equal(expected, traceparent);
+        await app.StopAsync(ct);
+    }
+
+    /// <summary>
+    /// A best-effort send leaves no row behind. Replaying a transcript read or a forward
+    /// teardown after a reconnect delivers it to a waiter that gave up long ago — and in
+    /// the transcript case the machine answers into nothing.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_best_effort_send_to_an_absent_machine_queues_nothing()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = cts.Token;
+        await using var app = BuildCore();
+        await app.StartAsync(ct);
+
+        await using var db = pg.NewContext();
+        var tokens = new TokenService(db, TimeProvider.System);
+        var creds = await tokens.ExchangeEnrollmentAsync(
+            (await tokens.IssueEnrollmentTokenAsync(ct)).Token, new MachineDeclaration("absent", "linux"), ct);
+        Assert.NotNull(creds);
+        var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
+
+        Assert.False(await registry.SendAsync(
+            creds!.MachineId, new KillCommand(SessionId.New()), ct, durable: false));
+        await using var after = pg.NewContext();
+        Assert.Empty(await after.RunnerOutbox.AsNoTracking().ToListAsync(ct));
+
+        // The durable default still records one, so the emptiness above is the flag's
+        // doing and not a machine the outbox never saw.
+        Assert.False(await registry.SendAsync(creds.MachineId, new KillCommand(SessionId.New()), ct));
+        await using var durable = pg.NewContext();
+        Assert.Single(await durable.RunnerOutbox.AsNoTracking().ToListAsync(ct));
+        await app.StopAsync(ct);
     }
 
     private static async Task<string?> ReadCommentAsync(HttpResponseMessage response, CancellationToken ct)

@@ -399,14 +399,26 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? o
     }
 
     /// <summary>
-    /// Sends a command down a machine's connection. Best-effort against a live
-    /// connection (§10): returns false if the machine is gone or the write
-    /// fails, never throws and never queues.
+    /// Sends a command to a machine. Returns whether it reached a live connection —
+    /// false if the machine is gone or the write failed. Never throws.
     /// </summary>
-    public async Task<bool> SendAsync(Guid machineId, RunnerCommand command, CancellationToken ct)
+    /// <param name="durable">
+    /// Whether a command that misses its machine should wait for it. Durable sends
+    /// record a <c>runner_outbox</c> row, so one written while a connection is dying
+    /// replays when the machine comes back; the return value still reports whether it
+    /// went out now, so callers that care can still tell.
+    ///
+    /// <para>False for a command whose answer has a deadline: a transcript read or a
+    /// forward teardown delivered after a reconnect arrives for a waiter that is long
+    /// gone, and in the transcript case replies into nothing. Those are best-effort
+    /// against a live connection (§10) and say so at the call site, because whether a
+    /// late delivery is worth anything is the caller's question, not this method's.</para>
+    /// </param>
+    public async Task<bool> SendAsync(
+        Guid machineId, RunnerCommand command, CancellationToken ct, bool durable = true)
     {
         long? queued = null;
-        if (outbox is not null)
+        if (durable && outbox is not null)
             queued = await outbox.EnqueueAsync(machineId, command, ct);
         if (!_connections.TryGetValue(machineId, out var conn))
             return false;

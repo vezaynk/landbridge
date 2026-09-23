@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using Landbridge.Contracts;
 using Microsoft.EntityFrameworkCore;
@@ -33,8 +34,17 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
     /// </summary>
     private readonly Dictionary<Guid, List<Channel<RunnerOutboxRow>>> _subscribers = [];
 
+    /// <summary>
+    /// Records one outbound command. The envelope carries the current dispatch span's
+    /// W3C id (§1) so the runner continues the same trace: the row is the command's only
+    /// carrier, so a traceparent dropped here is a trace that ends at the plane.
+    /// </summary>
     public async Task<long> EnqueueAsync(Guid machineId, RunnerCommand command, CancellationToken ct)
     {
+        // Read before the first await: Activity.Current flows ambiently from the caller's
+        // dispatch span, and reading it after a resumption would sample whatever span the
+        // continuation happens to land in.
+        var traceparent = Activity.Current?.Id;
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
         var row = new RunnerOutboxRow
@@ -42,7 +52,7 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
             MachineId = machineId,
             SessionId = SessionOf(command),
             Kind = KindOf(command),
-            Payload = RunnerWire.EncodeCommand(command),
+            Payload = RunnerWire.EncodeCommand(command, traceparent),
             CreatedAt = clock.GetUtcNow(),
         };
         db.Set<RunnerOutboxRow>().Add(row);
