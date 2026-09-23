@@ -277,8 +277,17 @@ public static class RunnerEndpoint
             dispatch.Signal();
             return true;
         }
-        if (RunnerWire.DecodeEvent(message) is { } evt)
+        if (RunnerWire.DecodeEvent(message, out var gapBefore) is { } evt)
         {
+            if (gapBefore > 0)
+                // The machine's outbound ring overflowed and threw these away before this
+                // event. They are gone — the ring is the only buffer (§10, §15) — so the
+                // count is the whole record that they existed. Worth saying out loud
+                // because the missing ones are liveness signals: a task can look quiet
+                // here while its machine was merely too busy to say otherwise.
+                logger.LogWarning(
+                    "runner {Machine} dropped {Dropped} outbound event(s) before this one",
+                    machineId, gapBefore);
             await sink.HandleAsync(evt, machineId, ct);
             return true;
         }

@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Landbridge.ControlPlane.Migrations
 {
     [DbContext(typeof(LandbridgeDbContext))]
-    [Migration("20260923225843_InitialSchema")]
+    [Migration("20260923233236_InitialSchema")]
     partial class InitialSchema
     {
         /// <inheritdoc />
@@ -272,6 +272,12 @@ namespace Landbridge.ControlPlane.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("slug");
+
+                    b.Property<bool>("TranscriptsServable")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("transcripts_servable");
 
                     b.Property<bool>("UnderBackPressure")
                         .ValueGeneratedOnAdd()

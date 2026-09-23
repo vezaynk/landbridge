@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Landbridge.Contracts;
 using Landbridge.Core;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -84,6 +85,25 @@ public sealed class TranscriptRelayService(
             if (state is null)
                 return new TranscriptResult.Unavailable(
                     TranscriptUnavailable.NoSuchSession, "No such task.");
+
+            // What the machine last said about itself. Checked before the command goes out
+            // because a runner that does not serve transcripts rejects it at the wire and
+            // never answers — waiting for that is the timeout this exists to avoid.
+            var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
+            var declared = await db.Machines.AsNoTracking()
+                .Where(m => m.Id == machine && m.LastSpokeAt != null)
+                .Select(m => (bool?)m.TranscriptsServable)
+                .FirstOrDefaultAsync(ct);
+            // Only a machine that has actually spoken has declared anything. One that has
+            // connected and not yet heartbeated reads false by column default, which is an
+            // absence of news rather than a refusal — it falls through and is asked.
+            if (declared is false)
+            {
+                return new TranscriptResult.Unavailable(
+                    TranscriptUnavailable.NotServable,
+                    $"Machine '{machine}' does not serve transcripts, so this one cannot be read. " +
+                    "Transcripts are captured and served by the machine that ran the task.");
+            }
             if (!state.Value.IsTerminal())
             {
                 return new TranscriptResult.Unavailable(
@@ -215,6 +235,14 @@ public enum TranscriptUnavailable
 
     /// <summary>The machine is connected but did not answer in time.</summary>
     Timeout,
+
+    /// <summary>
+    /// The machine is connected and does not serve transcripts (§12). Distinct from
+    /// <see cref="Timeout"/> on purpose: such a runner rejects the command at the wire
+    /// boundary and never replies, so without this the answer arrives only after the
+    /// wait expires and reads as a slow machine rather than an incapable one.
+    /// </summary>
+    NotServable,
 
     /// <summary>A read to that machine is already in flight.</summary>
     Busy,

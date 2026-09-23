@@ -79,6 +79,18 @@ public static class RunnerWire
     /// deserialize, so the domain <see cref="RunnerCommand"/> is unchanged.</summary>
     public const string TraceParent = "traceparent";
 
+    /// <summary>
+    /// The optional envelope property carrying how many events the runner's outbound ring
+    /// dropped immediately before this one (§10 back-pressure). Transport metadata
+    /// alongside <c>type</c>, like <see cref="TraceParent"/> — not part of the frozen §10
+    /// event vocabulary, and ignored by the concrete-record deserialize, so the domain
+    /// <see cref="RunnerEvent"/> is unchanged.
+    ///
+    /// <para>Absent when nothing was dropped, which is the overwhelmingly common case and
+    /// keeps the marker out of every ordinary envelope.</para>
+    /// </summary>
+    public const string Gap = "gap";
+
     // ── Encode ────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -113,7 +125,14 @@ public static class RunnerWire
     }
 
     /// <summary>Encodes an event to its type-discriminated JSON envelope.</summary>
-    public static string EncodeEvent(RunnerEvent evt)
+    public static string EncodeEvent(RunnerEvent evt) => EncodeEvent(evt, gapBefore: 0);
+
+    /// <summary>
+    /// Encodes an event, carrying the ring's gap marker when one is set. A dropped event is
+    /// a liveness signal the plane never received, so the count travels with the next
+    /// envelope rather than staying a local statistic the plane cannot see.
+    /// </summary>
+    public static string EncodeEvent(RunnerEvent evt, long gapBefore)
     {
         var (obj, type) = evt switch
         {
@@ -137,6 +156,8 @@ public static class RunnerWire
                 nameof(evt), evt.GetType().Name, "outside the runner event vocabulary"),
         };
         obj["type"] = type;
+        if (gapBefore > 0)
+            obj[Gap] = gapBefore;
         return obj.ToJsonString();
     }
 
@@ -196,15 +217,23 @@ public static class RunnerWire
 
     /// <summary>Decodes one event, or <c>null</c> when the <c>type</c> is missing
     /// or outside the vocabulary (§10 symmetry with <see cref="DecodeCommand(string)"/>).</summary>
-    public static RunnerEvent? DecodeEvent(string json)
+    public static RunnerEvent? DecodeEvent(string json) => DecodeEvent(json, out _);
+
+    /// <summary>
+    /// Decodes one event and also surfaces the optional <c>gap</c> marker — how many
+    /// events the runner dropped immediately before this one. <c>0</c> when the envelope
+    /// carries none, which is the ordinary case.
+    /// </summary>
+    public static RunnerEvent? DecodeEvent(string json, out long gapBefore)
     {
+        gapBefore = 0;
         if (!TryParse(json, out var doc))
             return null;
         using (doc)
         {
             if (!TryReadType(doc.RootElement, out var type))
                 return null;
-            return type switch
+            RunnerEvent? evt = type switch
             {
                 Started => doc.RootElement.Deserialize(RunnerWireContext.Default.StartedEvent),
                 SessionStarted => doc.RootElement.Deserialize(RunnerWireContext.Default.SessionStartedEvent),
@@ -224,6 +253,13 @@ public static class RunnerWire
                 ProcessWritten => doc.RootElement.Deserialize(RunnerWireContext.Default.ProcessWrittenEvent),
                 _ => null,
             };
+            if (evt is not null
+                && doc.RootElement.TryGetProperty(Gap, out var gap)
+                && gap.ValueKind == JsonValueKind.Number
+                && gap.TryGetInt64(out var dropped)
+                && dropped > 0)
+                gapBefore = dropped;
+            return evt;
         }
     }
 

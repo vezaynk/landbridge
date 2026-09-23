@@ -158,7 +158,8 @@ namespace Landbridge.ControlPlane.Migrations
                     last_spoke_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     ready = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
                     under_back_pressure = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
-                    profiles = table.Column<string[]>(type: "text[]", nullable: false, defaultValue: new string[0])
+                    profiles = table.Column<string[]>(type: "text[]", nullable: false, defaultValue: new string[0]),
+                    transcripts_servable = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false)
                 },
                 constraints: table =>
                 {

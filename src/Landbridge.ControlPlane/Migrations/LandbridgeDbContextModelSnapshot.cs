@@ -270,6 +270,12 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("slug");
 
+                    b.Property<bool>("TranscriptsServable")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("transcripts_servable");
+
                     b.Property<bool>("UnderBackPressure")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")

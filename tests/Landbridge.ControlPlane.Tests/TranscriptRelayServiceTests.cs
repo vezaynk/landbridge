@@ -111,6 +111,69 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         Assert.Equal(0, rig.Waiters.OutstandingCount); // the waiter is deregistered, not leaked
     }
 
+    /// <summary>
+    /// A machine that has said it cannot serve transcripts is answered from its last
+    /// heartbeat, not by asking it. Such a runner rejects read-transcript at the wire and
+    /// never replies, so asking costs the full wait and then reports a timeout — which
+    /// reads as a slow machine rather than an incapable one. Nothing is sent, and the
+    /// clock is never advanced, so a pass here is the answer arriving immediately.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_machine_that_does_not_serve_transcripts_says_so_without_being_asked()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var rig = Rig();
+        var task = await SeedTerminalTaskAsync(rig);
+        await DeclareTranscriptsServableAsync(rig, servable: false);
+
+        var read = await rig.Relay.ListAsync(task, Machine);
+
+        var unavailable = Assert.IsType<TranscriptResult.Unavailable>(read);
+        Assert.Equal(TranscriptUnavailable.NotServable, unavailable.Reason);
+        Assert.Empty(rig.Sent);
+        Assert.Equal(0, rig.Waiters.OutstandingCount);
+    }
+
+    /// <summary>The same machine having said it can serve is asked, as before — so the
+    /// check above is reading the declaration rather than refusing everything.</summary>
+    [SkippableFact]
+    public async Task A_machine_that_serves_transcripts_is_still_asked()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var rig = Rig();
+        var task = await SeedTerminalTaskAsync(rig);
+        await DeclareTranscriptsServableAsync(rig, servable: true);
+        rig.AnswerWith(_ => null); // received, deliberately unanswered
+
+        var read = await AdvanceUntilDoneAsync(rig.Clock, rig.Relay.ListAsync(task, Machine));
+
+        Assert.Equal(TranscriptUnavailable.Timeout, Assert.IsType<TranscriptResult.Unavailable>(read).Reason);
+        Assert.Single(rig.Sent);
+    }
+
+    /// <summary>Enrolls the rig's machine and applies one heartbeat through the real
+    /// last-value path, so the column under test is written the way production writes it.</summary>
+    private async Task DeclareTranscriptsServableAsync(Harness rig, bool servable)
+    {
+        await using var db = pg.NewContext();
+        db.Machines.Add(new Auth.MachineRow
+        {
+            Id = Machine,
+            Name = "mac-1",
+            Os = "linux",
+            Slug = $"relay-{Guid.NewGuid():N}"[..20],
+            EnrolledAt = rig.Clock.GetUtcNow(),
+        });
+        await db.SaveChangesAsync();
+        await HubOutbox.WriteHeartbeatAsync(
+            db, rig.Clock, Machine,
+            new MachineHeartbeat(
+                Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+                RunningSessions: 0, Profiles: ["default"], At: rig.Clock.GetUtcNow(),
+                TranscriptsServable: servable),
+            CancellationToken.None);
+    }
+
     [SkippableFact]
     public async Task A_machine_refusal_is_relayed_as_an_operator_facing_reason()
     {

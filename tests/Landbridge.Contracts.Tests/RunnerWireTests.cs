@@ -143,6 +143,36 @@ public class RunnerWireTests
     /// tolerance has to hold — a sender that omits a property is the case this covers, and
     /// a record default would make the test pass without the decoder doing anything.
     /// </summary>
+    /// <summary>
+    /// The ring's gap marker rides the envelope. Dropped events are gone — the ring is the
+    /// only outbound buffer (§10, §15) — so the count is the whole record that they ever
+    /// existed, and it has to reach the plane to be worth keeping.
+    /// </summary>
+    [Fact]
+    public void An_event_carries_the_rings_gap_marker()
+    {
+        var evt = new StartedEvent(SessionId.New(), DateTimeOffset.UtcNow);
+
+        var decoded = RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(evt, gapBefore: 7), out var gap);
+
+        Assert.Equal(evt, Assert.IsType<StartedEvent>(decoded));
+        Assert.Equal(7, gap);
+    }
+
+    /// <summary>
+    /// Nothing dropped means no marker on the envelope at all, which is the ordinary case —
+    /// the wire stays exactly as it was for every event that follows another cleanly.
+    /// </summary>
+    [Fact]
+    public void An_event_with_no_gap_carries_no_marker()
+    {
+        var encoded = RunnerWire.EncodeEvent(new StartedEvent(SessionId.New(), DateTimeOffset.UtcNow));
+
+        Assert.DoesNotContain(RunnerWire.Gap, JsonNode.Parse(encoded)!.AsObject().Select(p => p.Key));
+        Assert.NotNull(RunnerWire.DecodeEvent(encoded, out var gap));
+        Assert.Equal(0, gap);
+    }
+
     [Fact]
     public void Open_forward_command_decodes_when_the_data_plane_fields_are_absent()
     {

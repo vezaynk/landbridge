@@ -186,6 +186,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.Property(m => m.Ready).HasDefaultValue(false);
             e.Property(m => m.UnderBackPressure).HasDefaultValue(false);
             e.Property(m => m.Profiles).HasDefaultValue(Array.Empty<string>());
+            e.Property(m => m.TranscriptsServable).HasDefaultValue(false);
         });
 
         b.Entity<MachineProcessRow>(e =>

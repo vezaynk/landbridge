@@ -73,6 +73,7 @@ public static class HubOutbox
         machine.Ready = heartbeat.Ready && !heartbeat.UnderBackPressure;
         machine.UnderBackPressure = heartbeat.UnderBackPressure;
         machine.Profiles = heartbeat.Profiles.ToArray();
+        machine.TranscriptsServable = heartbeat.TranscriptsServable;
         Stage(db, clock, HubQueueRow.MachinesTopic, id);
 
         if (heartbeat.Processes is not null)
