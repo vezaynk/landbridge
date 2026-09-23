@@ -543,6 +543,12 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<bool>("Durable")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("durable");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasColumnType("text")

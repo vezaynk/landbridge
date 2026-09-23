@@ -20,6 +20,13 @@ public sealed class RunnerOutboxRow
     public string Payload { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? AckedAt { get; set; }
+
+    /// <summary>
+    /// Whether this command should wait for its machine. A durable row replays on the
+    /// next stream; a transient one is delivered live if anyone is listening and never
+    /// again, because its answer had a deadline that a reconnect has already missed.
+    /// </summary>
+    public bool Durable { get; set; } = true;
 }
 
 public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock)
@@ -39,7 +46,8 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
     /// W3C id (§1) so the runner continues the same trace: the row is the command's only
     /// carrier, so a traceparent dropped here is a trace that ends at the plane.
     /// </summary>
-    public async Task<long> EnqueueAsync(Guid machineId, RunnerCommand command, CancellationToken ct)
+    public async Task<long> EnqueueAsync(
+        Guid machineId, RunnerCommand command, CancellationToken ct, bool durable = true)
     {
         // Read before the first await: Activity.Current flows ambiently from the caller's
         // dispatch span, and reading it after a resumption would sample whatever span the
@@ -52,6 +60,7 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
             MachineId = machineId,
             SessionId = SessionOf(command),
             Kind = KindOf(command),
+            Durable = durable,
             Payload = RunnerWire.EncodeCommand(command, traceparent),
             CreatedAt = clock.GetUtcNow(),
         };
@@ -66,6 +75,7 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
             SessionId = row.SessionId,
             Kind = row.Kind,
             Payload = row.Payload,
+            Durable = row.Durable,
             CreatedAt = row.CreatedAt,
         });
         return row.Id;
@@ -86,12 +96,15 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
         return true;
     }
 
+    /// <summary>The durable rows this machine has not acknowledged, oldest first — what a
+    /// newly-opened stream replays. Transient rows are excluded: they were for a caller that
+    /// is no longer waiting.</summary>
     public async Task<IReadOnlyList<RunnerOutboxRow>> UnackedAsync(Guid machineId, CancellationToken ct)
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
         return await db.Set<RunnerOutboxRow>().AsNoTracking()
-            .Where(r => r.MachineId == machineId && r.AckedAt == null)
+            .Where(r => r.MachineId == machineId && r.AckedAt == null && r.Durable)
             .OrderBy(r => r.Id)
             .ToListAsync(ct);
     }

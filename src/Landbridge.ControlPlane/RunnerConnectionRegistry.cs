@@ -418,8 +418,8 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? o
         Guid machineId, RunnerCommand command, CancellationToken ct, bool durable = true)
     {
         long? queued = null;
-        if (durable && outbox is not null)
-            queued = await outbox.EnqueueAsync(machineId, command, ct);
+        if (outbox is not null)
+            queued = await outbox.EnqueueAsync(machineId, command, ct, durable);
         if (!_connections.TryGetValue(machineId, out var conn))
             return false;
         try

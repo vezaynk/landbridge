@@ -243,14 +243,18 @@ public sealed class RunnerOutboxTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.False(await registry.SendAsync(
             creds!.MachineId, new KillCommand(SessionId.New()), ct, durable: false));
-        await using var after = pg.NewContext();
-        Assert.Empty(await after.RunnerOutbox.AsNoTracking().ToListAsync(ct));
-
-        // The durable default still records one, so the emptiness above is the flag's
-        // doing and not a machine the outbox never saw.
         Assert.False(await registry.SendAsync(creds.MachineId, new KillCommand(SessionId.New()), ct));
-        await using var durable = pg.NewContext();
-        Assert.Single(await durable.RunnerOutbox.AsNoTracking().ToListAsync(ct));
+
+        await using var after = pg.NewContext();
+        var rows = await after.RunnerOutbox.AsNoTracking().OrderBy(r => r.Id).ToListAsync(ct);
+        Assert.Equal([false, true], rows.Select(r => r.Durable));
+
+        // Only the durable one is waiting for the machine. The transient row stays in the
+        // table — it is a record of what the plane sent — but a stream that opens now is
+        // not handed a read whose caller stopped waiting.
+        var replayed = Assert.Single(
+            await app.Services.GetRequiredService<RunnerOutbox>().UnackedAsync(creds.MachineId, ct));
+        Assert.True(replayed.Durable);
         await app.StopAsync(ct);
     }
 
