@@ -317,6 +317,13 @@ public sealed class RunnerOutboxTests(PostgresFixture pg) : IAsyncLifetime
         if (keepAliveMs is { } ms)
             builder.Configuration["Landbridge:RunnerStreamKeepAliveMs"] = ms.ToString();
         builder.AddPlane();
+        builder.Services.AddSingleton(new SessionEventListener(pg.ConnectionString));
+        builder.Services.AddSingleton(sp => new DispatchService(
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            sp.GetRequiredService<RunnerConnectionRegistry>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<ILogger<DispatchService>>(),
+            sp.GetRequiredService<SessionEventListener>()));
         var app = builder.Build();
         app.UseAuthentication();
         app.UseAuthorization();

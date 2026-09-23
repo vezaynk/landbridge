@@ -6,13 +6,19 @@ namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The in-memory registry of live runner connections, spec §10. Single-node v1:
-/// landbridged only dials outbound, so a connection is a WebSocket the control plane
-/// accepted and the send delegate that writes command frames back down it. Per
-/// machine it holds that delegate, generation, tracked dispatches, and the two
-/// liveness clocks §10 needs on those tasks.
+/// landbridged only dials outbound, so a connection is the <c>GET /runner/events</c>
+/// stream the control plane is holding open for a machine. Per machine it holds that
+/// stream's generation, tracked dispatches, and the two liveness clocks §10 needs on
+/// those tasks.
+///
+/// Commands do not travel through this type. They are recorded in <c>runner_outbox</c>
+/// and published to the stream serving the machine, which is the single writer on that
+/// response; <see cref="SendAsync"/> enqueues and then reports whether the machine is
+/// connected. The optional send delegate exists for connections with no stream under
+/// them — the in-process rigs and every test that drives the registry directly.
 ///
 /// Ready / profiles / processes / last-spoke live on <c>machines</c> and
-/// <c>machine_processes</c> (heartbeat upsert). This type is the socket.
+/// <c>machine_processes</c> (heartbeat upsert). This type is the connection.
 ///
 /// It is transport-agnostic — nothing here knows about WebSockets — so it is
 /// driven directly in tests. All state is process-local and evaporates on restart,
@@ -22,19 +28,18 @@ namespace Landbridge.ControlPlane;
 /// <c>working</c> with no clock over it.
 ///
 /// <para><b>A machine is not a connection</b> (#94). One machine can briefly hold two
-/// accepted <c>/runner</c> connections — a half-open socket the plane has not noticed
-/// (a laptop closed and reattached, §17.8) plus the fresh one — so every operation here
-/// is deliberately keyed one way or the other:</para>
+/// streams — a half-open one the plane has not noticed (a laptop closed and reattached,
+/// §17.8) plus the fresh one — so every operation here is deliberately keyed one way or
+/// the other:</para>
 /// <list type="bullet">
 /// <item><b>Machine-keyed</b> — dispatch, tracking, sends, and every view. These target
 /// the machine, and the newest connection is by definition the way to reach it, so
 /// resolving through the current entry is the correct behaviour.</item>
 /// <item><b>Connection-keyed</b>, on the <see cref="ConnectionToken"/> minted by
-/// <see cref="Register"/> — teardown (<see cref="Unregister"/>) and folding in what that
-/// socket reports about itself (<see cref="ApplyHeartbeat(ConnectionToken, MachineHeartbeat)"/>).
-/// Both were machine-keyed before, which is precisely how a superseded endpoint's cleanup
-/// unregistered the live connection that had replaced it — requeueing a running machine's
-/// tasks and leaving its socket registered nowhere.</item>
+/// <see cref="Register"/> — teardown (<see cref="Unregister"/>), which was machine-keyed
+/// before, and that is precisely how a superseded endpoint's cleanup unregistered the
+/// live connection that had replaced it, requeueing a running machine's tasks and leaving
+/// it registered nowhere.</item>
 /// </list>
 /// </summary>
 public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? outbox = null)
@@ -74,7 +79,8 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? o
     /// nothing to close, and such a connection simply disconnects without a hang-up.</para>
     /// </summary>
     public Registration Register(
-        Guid machineId, IReadOnlySet<string> profiles, Func<RunnerCommand, CancellationToken, Task> send,
+        Guid machineId, IReadOnlySet<string> profiles,
+        Func<RunnerCommand, CancellationToken, Task>? send = null,
         Func<CancellationToken, Task>? close = null)
     {
         var token = new ConnectionToken(machineId, Interlocked.Increment(ref _generations));
@@ -173,19 +179,6 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? o
 
         return new UnregisterOutcome(true, held);
     }
-
-    /// <summary>
-    /// Accepts a heartbeat on the connection <paramref name="token"/> names.
-    /// Facts persist in <c>machines</c> / <c>machine_processes</c> via
-    /// <see cref="HubOutbox.WriteHeartbeatAsync"/>. This only checks the
-    /// token is still live so a superseded socket cannot count as a beat (#94).
-    /// </summary>
-    public bool ApplyHeartbeat(ConnectionToken token, MachineHeartbeat heartbeat)
-    {
-        _ = heartbeat;
-        return Current(token) is not null;
-    }
-
 
 
     /// <summary>The connection <paramref name="token"/> names, or null once it has been
@@ -417,16 +410,21 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? o
     public async Task<bool> SendAsync(
         Guid machineId, RunnerCommand command, CancellationToken ct, bool durable = true)
     {
-        long? queued = null;
         if (outbox is not null)
-            queued = await outbox.EnqueueAsync(machineId, command, ct, durable);
+            await outbox.EnqueueAsync(machineId, command, ct, durable);
         if (!_connections.TryGetValue(machineId, out var conn))
             return false;
+
+        // A real runner holds an HTTP stream and no delegate: the row enqueued above is
+        // published to that stream, which is the single writer on its response. Reporting
+        // success here is reporting that the machine is connected, which is what every
+        // caller asks this for.
+        if (conn.Send is not { } send)
+            return true;
+
         try
         {
-            await conn.Send(command, ct);
-            if (queued is { } id)
-                await outbox!.AckAsync(machineId, id, ct);
+            await send(command, ct);
             return true;
         }
         catch
@@ -584,10 +582,17 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? o
         DateTimeOffset LastActivity, DateTimeOffset LastProgress, bool ProcessGone = false,
         bool Inherited = false);
 
-    private sealed class RunnerConnection(Func<RunnerCommand, CancellationToken, Task> send, long generation)
+    private sealed class RunnerConnection(Func<RunnerCommand, CancellationToken, Task>? send, long generation)
     {
         public object Gate { get; } = new();
-        public Func<RunnerCommand, CancellationToken, Task> Send { get; } = send;
+
+        /// <summary>
+        /// Where a command goes for a connection that is not an HTTP stream — the
+        /// in-process rigs and every test that drives the registry directly. Null for a
+        /// real runner: its commands ride <c>runner_outbox</c> to the stream serving it,
+        /// and a delegate here as well would deliver each one twice.
+        /// </summary>
+        public Func<RunnerCommand, CancellationToken, Task>? Send { get; } = send;
 
         /// <summary>How to hang up on this connection from outside its endpoint
         /// (<see cref="DisconnectAsync"/>); null for a connection with no socket under it.</summary>

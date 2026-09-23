@@ -20,9 +20,9 @@ namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The whole spine over the wire (spec §10): the real control-plane host — auth
-/// scheme, connection registry, dispatch loop, and the <c>/runner</c> WebSocket
+/// scheme, connection registry, dispatch loop, and the <c>/runner/events</c> command stream
 /// endpoint — hosted on loopback Kestrel, with the real landbridged
-/// <see cref="WebSocketControlPlaneChannel"/> dialing in. A submitted task flows
+/// <see cref="HttpControlPlaneChannel"/> dialing in. A submitted task flows
 /// out as a <c>DispatchCommand</c> down the socket the runner dialed, and a
 /// <c>started</c> event flows back. The harness stays fake — no real claude -p.
 /// </summary>
@@ -46,7 +46,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         await using var app = BuildServer();
         await app.StartAsync(ct);
         var baseUrl = app.Urls.First(u => u.StartsWith("http://"));
-        var wsUrl = new Uri(baseUrl.Replace("http://", "ws://") + "/runner");
+        var planeUrl = new Uri(baseUrl);
 
         var team = TeamId.New();
 
@@ -69,7 +69,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
         // ── landbridged dials in with the real channel ──────────────────────────
         var dispatched = new TaskCompletionSource<DispatchCommand>(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var channel = new WebSocketControlPlaneChannel(wsUrl, machineToken, TimeProvider.System);
+        await using var channel = new HttpControlPlaneChannel(planeUrl, machineToken, TimeProvider.System);
         channel.Start((command, _) =>
         {
             if (command is DispatchCommand d)
@@ -115,7 +115,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
     }
 
     /// <summary>
-    /// #94 at the endpoint, over real sockets: one machine holding two <c>/runner</c>
+    /// #94 at the endpoint, over real sockets: one machine holding two <c>/runner/events</c>
     /// connections, and the older one closing afterwards — §17.8's "close a laptop and
     /// reattach", where the plane never noticed the first socket had stopped carrying bytes.
     ///
@@ -143,7 +143,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         await using var app = BuildServer();
         await app.StartAsync(ct);
         var baseUrl = app.Urls.First(u => u.StartsWith("http://"));
-        var wsUrl = new Uri(baseUrl.Replace("http://", "ws://") + "/runner");
+        var planeUrl = new Uri(baseUrl);
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
 
         var team = TeamId.New();
@@ -163,7 +163,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         var held = await SeedSubmittedAsync(team, "the first task", ct);
 
         // ── The connection the laptop will leave behind, with real work on it ────────
-        var stale = new WebSocketControlPlaneChannel(wsUrl, machineToken, TimeProvider.System);
+        var stale = new HttpControlPlaneChannel(planeUrl, machineToken, TimeProvider.System);
         var staleDispatches = new TaskCompletionSource<DispatchCommand>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         stale.Start((command, _) =>
@@ -178,13 +178,16 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         Assert.Equal(held, (await staleDispatches.Task.WaitAsync(TimeSpan.FromSeconds(30), ct)).Session);
 
         // ── The reattach: a second connection for the same machine supersedes it ─────
-        await using var live = new WebSocketControlPlaneChannel(wsUrl, machineToken, TimeProvider.System);
-        var liveDispatches = new TaskCompletionSource<DispatchCommand>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var live = new HttpControlPlaneChannel(planeUrl, machineToken, TimeProvider.System);
+        // Everything it is handed, not just the first: delivery is at-least-once, so a
+        // reconnecting machine may legitimately be replayed a command whose ack had not
+        // landed when it opened its stream. Asserting on "the first dispatch" would be
+        // asserting that no replay happened, which is not this test's subject.
+        var liveDispatches = new System.Collections.Concurrent.ConcurrentBag<DispatchCommand>();
         live.Start((command, _) =>
         {
             if (command is DispatchCommand d)
-                liveDispatches.TrySetResult(d);
+                liveDispatches.Add(d);
             return Task.CompletedTask;
         });
         Assert.True(await WaitUntilAsync(() => live.IsConnected, TimeSpan.FromSeconds(15)),
@@ -203,8 +206,9 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
         // The machine is still there: a task submitted now reaches the surviving channel.
         var next = await SeedSubmittedAsync(team, "the task that proves the machine is still there", ct);
-        var arrived = await liveDispatches.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
-        Assert.Equal(next, arrived.Session);
+        Assert.True(
+            await WaitUntilAsync(() => liveDispatches.Any(d => d.Session == next), TimeSpan.FromSeconds(30)),
+            "the surviving connection never received the task submitted after the teardown");
 
         // And the work already in flight never noticed — same attempt, no requeue. It is also
         // still TRACKED, which takes both halves of the fix: the replacing connection re-derived
@@ -238,7 +242,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
     /// real, and what is asserted is the client observing it go away.</para>
     /// </summary>
     [SkippableFact]
-    public async Task Revoking_a_machine_closes_its_dialed_socket_and_401s_its_worker_token()
+    public async Task Revoking_a_machine_closes_its_command_stream_and_401s_its_worker_token()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -247,7 +251,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         await using var app = BuildServer();
         await app.StartAsync(ct);
         var baseUrl = app.Urls.First(u => u.StartsWith("http://"));
-        var wsUrl = new Uri(baseUrl.Replace("http://", "ws://") + "/runner");
+        var planeUrl = new Uri(baseUrl);
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
 
         var team = TeamId.New();
@@ -265,7 +269,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         var machineId = machineGuid;
         var task = await SeedSubmittedAsync(team, "the work the compromised box is running", ct);
 
-        await using var channel = new WebSocketControlPlaneChannel(wsUrl, machineToken, TimeProvider.System);
+        await using var channel = new HttpControlPlaneChannel(planeUrl, machineToken, TimeProvider.System);
         var dispatched = new TaskCompletionSource<DispatchCommand>(TaskCreationOptions.RunContinuationsAsynchronously);
         channel.Start((command, _) =>
         {

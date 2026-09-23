@@ -138,16 +138,6 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
         return channel.Reader;
     }
 
-    /// <summary>True once the row has been acknowledged — by a runner, or by the
-    /// socket write that carried the same command down the WebSocket.</summary>
-    public async Task<bool> IsAckedAsync(long id, CancellationToken ct)
-    {
-        await using var scope = scopes.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
-        return await db.Set<RunnerOutboxRow>().AsNoTracking()
-            .AnyAsync(r => r.Id == id && r.AckedAt != null, ct);
-    }
-
     private void Publish(RunnerOutboxRow row)
     {
         List<Channel<RunnerOutboxRow>>? copy;
