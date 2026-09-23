@@ -3,8 +3,10 @@ using System.Text.Json.Serialization;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Landbridge.Web;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Landbridge.Mcp.Dashboard;
 
@@ -51,21 +53,38 @@ internal static class ConformanceEndpoints
                     statusCode: StatusCodes.Status400BadRequest);
 
             var runId = TeamId.New();
-            var lead = new LeadClaim(runId);
             var specs = ConformanceCatalog.For(runId.Value);
-            var created = new List<ConformanceSessionView>(specs.Count);
-            foreach (var spec in specs)
+            List<ConformanceSessionView> created;
+            var core = http.RequestServices.GetService<CoreWriteClient>();
+            var bearer = DashboardAuth.ReadToken(http);
+            if (core is { Enabled: true } && !string.IsNullOrEmpty(bearer))
             {
-                var result = await store.CreateAsync(
-                    new CreateSession(
-                        lead, runId, spec.Description, profile),
-                    ct);
-                if (result is not StoreResult.Applied applied)
-                    return Results.Json(new { error = "failed to create a dummy session", detail = result.ToString() },
+                var via = await core.PostAsAsync<CoreConformanceReply>("/core/v1/conformance", bearer,
+                    new CoreConformanceBody(profile, specs.Select(s => new CoreConformanceSpec(s.Kind, s.Description)).ToList(),
+                        runId.Value), ct);
+                if (via is not { Ok: true, RunId: { } minted, Sessions: { } sessions })
+                    return Results.Json(new { error = via?.Reason ?? "failed to create a dummy session" },
                         Json, statusCode: StatusCodes.Status500InternalServerError);
-                created.Add(new ConformanceSessionView(
-                    applied.Session.Id.Value, spec.Kind, applied.Session.State, applied.Session.Attempt,
-                    ResultReference: null, LastRequeueReason: null));
+                runId = new TeamId(minted);
+                created = sessions.Select(s => new ConformanceSessionView(
+                    s.SessionId, s.Kind, Enum.Parse<SessionState>(s.State), s.Attempt,
+                    ResultReference: null, LastRequeueReason: null)).ToList();
+            }
+            else
+            {
+                var lead = new LeadClaim(runId);
+                created = new List<ConformanceSessionView>(specs.Count);
+                foreach (var spec in specs)
+                {
+                    var result = await store.CreateAsync(
+                        new CreateSession(lead, runId, spec.Description, profile), ct);
+                    if (result is not StoreResult.Applied applied)
+                        return Results.Json(new { error = "failed to create a dummy session", detail = result.ToString() },
+                            Json, statusCode: StatusCodes.Status500InternalServerError);
+                    created.Add(new ConformanceSessionView(
+                        applied.Session.Id.Value, spec.Kind, applied.Session.State, applied.Session.Attempt,
+                        ResultReference: null, LastRequeueReason: null));
+                }
             }
 
             var machines = await MachineLive.DeclaringAsync(db, registry, profile, ct);
