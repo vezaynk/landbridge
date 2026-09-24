@@ -757,7 +757,7 @@ internal sealed class FleetRig(
     }
 
     /// <summary>
-    /// Drive a task until the worker reports on <paramref name="machineId"/>,
+    /// Drive a task until the worker reports on <paramref name="alias"/>,
     /// tolerant of a worker that ends its turn without reporting. Each time the task is
     /// claimable (the initial submit, and every requeue-on-exit surfaced by the drained
     /// ring), a fresh worker is spawned — up to <paramref name="maxAttempts"/> — within
@@ -767,13 +767,13 @@ internal sealed class FleetRig(
     /// flakes one turn no longer reds the whole opt-in job.
     /// </summary>
     public Task<bool> DispatchUntilReportedAsync(
-        SessionId task, Guid machineId, int maxAttempts, TimeSpan budget, CancellationToken ct) =>
+        SessionId task, string alias, int maxAttempts, TimeSpan budget, CancellationToken ct) =>
         DispatchUntilAsync(
-            task, machineId, async () => await HasReportAsync(task, ct),
+            task, alias, async () => await HasReportAsync(task, ct),
             maxAttempts, budget, ct);
 
     /// <summary>
-    /// The general form: drive <paramref name="task"/> on <paramref name="machineId"/> until
+    /// The general form: drive <paramref name="task"/> on <paramref name="alias"/> until
     /// <paramref name="done"/> holds, respawning a fresh worker each time the task is claimable
     /// again — the initial submit, and every requeue-on-exit — up to
     /// <paramref name="maxAttempts"/> within <paramref name="budget"/>.
@@ -785,8 +785,14 @@ internal sealed class FleetRig(
     /// blocking on a question, registering a service — needs the same tolerance, so the
     /// completion test is a predicate rather than a fixed state.</para>
     /// </summary>
+    /// <param name="alias">
+    /// The fleet alias to steer dispatch to ("A", "B") — not the enrolled machine id.
+    /// <see cref="DispatchToAsync"/> decides readiness by comparing aliases, so a wire id
+    /// here matches nothing, every machine is beaten not-ready, and the task sits in
+    /// <c>submitted</c> until the budget runs out. Typed as the alias so that cannot recur.
+    /// </param>
     public async Task<bool> DispatchUntilAsync(
-        SessionId task, Guid machineId, Func<Task<bool>> done, int maxAttempts, TimeSpan budget,
+        SessionId task, string alias, Func<Task<bool>> done, int maxAttempts, TimeSpan budget,
         CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + budget;
@@ -805,7 +811,7 @@ internal sealed class FleetRig(
             }
             if (await IsClaimableAsync(task, ct) && attempts < maxAttempts)
             {
-                await DispatchToAsync(machineId.ToString(), ct);
+                await DispatchToAsync(alias, ct);
                 attempts++;
             }
             try { await Task.Delay(TimeSpan.FromMilliseconds(500), ct); }

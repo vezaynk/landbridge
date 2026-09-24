@@ -147,7 +147,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var token = NewToken();
         var stepA = await rig.CreateSessionAsync(EchoDescription("A", token), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(stepA, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
             "machine A's real claude worker never mailed a report on step A.\n" + await rig.RealWorkerDiagnosticsAsync(stepA, ct));
 
         // The handoff: read what A actually committed, not the test's own constant.
@@ -157,7 +157,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // Step B on machine B: report the token A produced.
         var stepB = await rig.CreateSessionAsync(EchoDescription("B", token), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(stepB, TestMachineIds.For("B"), MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
             "machine B's real claude worker never confirmed the handoff with a report.\n" + await rig.RealWorkerDiagnosticsAsync(stepB, ct));
 
         var referenceB = await rig.ResultReferenceAsync(stepB, ct);
@@ -228,7 +228,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         var session = await rig.CreateSessionAsync(EchoDescription("A", "first-done"), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(session, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(session, "A", MaxAttempts, PerLegBudget, ct),
             "the first real claude worker never mailed a report.\n"
             + await rig.RealWorkerDiagnosticsAsync(session, ct));
         var firstSession = await rig.HarnessSessionRefAsync(session, ct);
@@ -249,7 +249,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         await rig.SendInputRequestAsync(session, StoppedSessionDescription, ct);
         Assert.True(
             await rig.DispatchUntilAsync(
-                session, TestMachineIds.For("A"),
+                session, "A",
                 async () => (await rig.ResultReferenceAsync(session, ct))?.Contains(remembered) == true,
                 MaxAttempts, PerLegBudget, ct),
             "the resumed worker never mailed the remembered nonce.\n"
@@ -307,7 +307,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // Step 1: a real worker starts the process and completes its own task.
         var starter = await rig.CreateSessionAsync(StartProcessDescription(processName, port, body), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(starter, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(starter, "A", MaxAttempts, PerLegBudget, ct),
             "the real claude worker never started its process and reported.\n"
             + await rig.RealWorkerDiagnosticsAsync(starter, ct));
         Assert.Contains(processName, await rig.ResultReferenceAsync(starter, ct));
@@ -331,7 +331,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // Step 2: the cleanup worker — a different task, told no names — finds it and stops it.
         var cleaner = await rig.CreateSessionAsync(CleanupDescription, ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(cleaner, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(cleaner, "A", MaxAttempts, PerLegBudget, ct),
             "the real claude cleanup worker never reported.\n"
             + await rig.RealWorkerDiagnosticsAsync(cleaner, ct));
 
@@ -389,7 +389,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             ServeDescription(processName, serviceName, port, body), ct);
         Assert.True(
             await rig.DispatchUntilAsync(
-                producer, TestMachineIds.For("A"), () => rig.ServiceExistsAsync(serviceName, ct),
+                producer, "A", () => rig.ServiceExistsAsync(serviceName, ct),
                 MaxAttempts, PerLegBudget, ct),
             "the real claude producer never registered its service.\n"
             + await rig.RealWorkerDiagnosticsAsync(producer, ct));
@@ -404,7 +404,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // Consumer on B: a different machine, a different agent, told only the service name.
         var consumer = await rig.CreateSessionAsync(FetchDescription(serviceName), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(consumer, TestMachineIds.For("B"), MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(consumer, "B", MaxAttempts, PerLegBudget, ct),
             "the real claude consumer never fetched through the forward and reported.\n"
             + await rig.RealWorkerDiagnosticsAsync(consumer, ct)
             + await rig.RealWorkerDiagnosticsAsync(producer, ct));

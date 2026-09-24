@@ -164,7 +164,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         // harness is up and streaming — before stopping it. Stopping earlier would race the spawn.
         Assert.True(
             await rig.DispatchUntilAsync(
-                task, TestMachineIds.For("A"), async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
+                task, "A", async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
                 MaxAttempts, PerLegBudget, ct),
             "the real codex worker never reported a thread ref, so it was never observably working.\n"
             + CodexFailureHypotheses(rig, task) + await rig.RealWorkerDiagnosticsAsync(task, ct));
@@ -172,7 +172,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         var sessionRef = await rig.HarnessSessionRefAsync(task, ct);
         Assert.True(
             await rig.SendStopAsync(
-                TestMachineIds.For("A"), task, TimeSpan.FromMinutes(1), StopDisposition.PreserveAndPark,
+                rig.EnrolledId("A"), task, TimeSpan.FromMinutes(1), StopDisposition.PreserveAndPark,
                 "characterizing real-codex stop delivery", ct),
             "the stop was not delivered to the machine holding the task");
 
@@ -239,7 +239,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         var token = NewToken();
         var stepA = await rig.CreateSessionAsync(EchoDescription("A", token), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(stepA, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
             "the real claude worker never mailed a report on step A.\n"
             + await rig.RealWorkerDiagnosticsAsync(stepA, ct));
 
@@ -250,7 +250,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         // Step B, on the codex machine: report the token the claude worker produced.
         var stepB = await rig.CreateSessionAsync(EchoDescription("B", token), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(stepB, TestMachineIds.For("B"), MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
             "the real codex worker never confirmed the cross-harness handoff.\n"
             + CodexFailureHypotheses(rig, stepB) + await rig.RealWorkerDiagnosticsAsync(stepB, ct));
 
