@@ -295,6 +295,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasKey(r => r.Id);
             e.Property(r => r.Id).UseIdentityAlwaysColumn();
             e.Property(r => r.Payload).HasColumnType("jsonb");
+            e.Property(r => r.Durable).HasDefaultValue(true);
             e.HasIndex(r => r.MachineId).HasFilter("acked_at IS NULL");
         });
 

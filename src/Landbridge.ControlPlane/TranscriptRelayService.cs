@@ -115,7 +115,7 @@ public sealed class TranscriptRelayService(
 
             // Best-effort against a live connection (§10): a machine that dropped between
             // the check above and here is the same answer as one that was never there.
-            if (!await registry.SendAsync(machine, command, ct))
+            if (!await registry.SendAsync(machine, command, ct, durable: false))
             {
                 return new TranscriptResult.Unavailable(
                     TranscriptUnavailable.MachineOffline,

@@ -31,7 +31,7 @@ brings up, in dependency order:
 | `relay` | `landbridge-relay` | `http://127.0.0.1:5100` (fixed, un-proxied) |
 | `litellm` | Local LiteLLM gateway the classifier dials (`provider/model` slugs) | `http://127.0.0.1:4000` (fixed, un-proxied) |
 | `classifier` | Permission classifier (simple argv allowlist, destroy-guard, two-stage LLM) | `http://127.0.0.1:5310` (fixed, un-proxied) |
-| `landbridged-codex` / `-claude` / `-grok` | Three enrolled Linux containers, each dialing `ws://host.docker.internal:5050/runner` | outbound only |
+| `landbridged-codex` / `-claude` / `-grok` | Three enrolled Linux containers, each streaming from `http://host.docker.internal:5050/runner/events` | outbound only |
 
 The endpoints for `mcp` and `relay` are pinned to fixed loopback ports and *not*
 proxied by Aspire's DCP, because the sibling `landbridged`/worker/relay processes
@@ -405,7 +405,7 @@ A healthy start logs one line naming the machine id, the declared profiles, the
 stray count, and the control endpoint:
 
 ```
-landbridged up: machine=<id> profiles=[default] strays_reaped=0 control=wss://plane.example.com/runner
+landbridged up: machine=<id> profiles=[default] strays_reaped=0 control=https://plane.example.com
 ```
 
 Then confirm the machine appears in the dashboard's Machine Group. `strays_reaped=0`
@@ -601,7 +601,7 @@ Flags: `--config <path>` (required for a normal run), `--machine-id <id>`,
 
 | Env var | Purpose |
 |---|---|
-| `LANDBRIDGE_CONTROL_URL` | The `ws(s)://…/runner` URL to dial. In the dev loop the AppHost sets it; with file credentials it is derived from the saved control URL. |
+| `LANDBRIDGE_CONTROL_URL` | The plane's `http(s)://` base. landbridged POSTs frames to `/runner/ingest` and takes commands from `/runner/events`. In the dev loop the AppHost sets it; with file credentials it defaults to the saved control URL. |
 | `LANDBRIDGE_MACHINE_TOKEN` | A fixed machine bearer (dev-loop path — never refreshed). When unset, `landbridged` loads persisted credentials from the state dir and refreshes them. |
 | `LANDBRIDGE_MACHINE_ID` | Machine id (else `--machine-id`, else a random id). |
 | `LANDBRIDGE_STATE_DIR` / `XDG_STATE_HOME` | State-dir resolution (see enrollment). |

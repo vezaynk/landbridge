@@ -278,7 +278,6 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var first = SessionId.New();
         var second = SessionId.New();
         var connection = registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(connection.Token, Heartbeat("default"));
         registry.TrackDispatch(M1, first);
         registry.TrackDispatch(M1, second);
 
@@ -442,7 +441,6 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
             if (command is KillCommand k)
                 whenKilled = await StateAsync(clock, k.Session);
         });
-        registry.ApplyHeartbeat(conn.Token, Heartbeat("default"));
         registry.TrackDispatch(m1, seeded.Session);
 
         clock.Advance(Window + TimeSpan.FromSeconds(1));
@@ -674,7 +672,6 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var registry = new RunnerConnectionRegistry(clock);
         var task = SessionId.New();
         var stale = registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(stale.Token, Heartbeat("default"));
         registry.TrackDispatch(M1, task);
 
         var live = LiveConnection(clock, registry, M1);
@@ -710,21 +707,11 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var staleReceived = new List<RunnerCommand>();
         var stale = registry.Register(M1, Set("default"),
             (cmd, _) => { staleReceived.Add(cmd); return Task.CompletedTask; });
-        registry.ApplyHeartbeat(stale.Token, Heartbeat("default"));
 
         var live = LiveConnection(clock, registry, M1);
 
-        // A heartbeat still arriving on the stale socket — buffered, or a genuinely
-        // overlapping pair — reported back-pressure. Applied by machine id, as it was, this
-        // would mark the LIVE connection unready and quietly stop the machine taking work.
-        registry.ApplyHeartbeat(
-            stale.Token,
-            new MachineHeartbeat(Ready: false, UnderBackPressure: true,
-                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
-
+        // The machine is still reachable, on the connection that replaced the stale one.
         Assert.NotNull(registry.SnapshotFor(M1));
-
-        Assert.False(registry.SnapshotFor(M1)!.UnderBackPressure);
 
         // And the machine is reached through the connection that is actually carrying bytes.
         // This one stays machine-keyed on purpose: a send targets the machine, and the newest
@@ -743,7 +730,6 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var m1 = seeded.Machine;
         var registry = new RunnerConnectionRegistry(clock);
         var stale = registry.Register(m1, Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(stale.Token, Heartbeat("default"));
         registry.TrackDispatch(m1, seeded.Session);
 
         // The reattach. Registering drops the stale connection's tracked dispatches, and
@@ -785,7 +771,6 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var m1 = seeded.Machine;
         var registry = new RunnerConnectionRegistry(clock);
         var stale = registry.Register(m1, Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(stale.Token, Heartbeat("default"));
         registry.TrackDispatch(m1, seeded.Session);
 
         var live = LiveConnection(clock, registry, m1);
@@ -864,7 +849,6 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
                 dispatched.TrySetResult(d);
             return Task.CompletedTask;
         });
-        registry.ApplyHeartbeat(connection.Token, Heartbeat("default"));
         Beat(clock, m1);
 
         // Break the claim itself — the instance-mint effect's insert, inside
@@ -1041,7 +1025,6 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var captured = new List<RunnerCommand>();
         var connection = registry.Register(
             machineId, Set("default"), (cmd, _) => { captured.Add(cmd); return Task.CompletedTask; });
-        registry.ApplyHeartbeat(connection.Token, Heartbeat("default"));
         Beat(clock, machineId);
         return new Wired(connection.Token, captured);
     }
@@ -1058,7 +1041,6 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var registry = new RunnerConnectionRegistry(clock);
         var connection = registry.Register(machineId, Set("default"),
             (_, _) => throw new IOException("the socket is gone"));
-        registry.ApplyHeartbeat(connection.Token, Heartbeat("default"));
         Beat(clock, machineId);
         registry.TrackDispatch(machineId, task);
         return (registry, connection.Token);

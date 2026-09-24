@@ -81,7 +81,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         // A row left behind is picked up by the next test's drain, which then reports
         // "queued" for a command it never looked at.
         await db.Database.ExecuteSqlRawAsync(
-            "TRUNCATE sessions, worker_instances, registered_services, session_events, credentials, machines, machine_processes, lead_events, lead_teams, lead_machine_bindings, preview_mappings, relay_grants, team_forward_usage, session_usage, friction_reports, hub_queue, command_queue RESTART IDENTITY CASCADE");
+            "TRUNCATE sessions, worker_instances, registered_services, session_events, credentials, machines, machine_processes, lead_events, lead_teams, lead_machine_bindings, preview_mappings, relay_grants, team_forward_usage, session_usage, friction_reports, hub_queue, command_queue, runner_outbox RESTART IDENTITY CASCADE");
 
 
     }

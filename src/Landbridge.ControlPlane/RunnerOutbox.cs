@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using Landbridge.Contracts;
 using Microsoft.EntityFrameworkCore;
@@ -19,6 +20,13 @@ public sealed class RunnerOutboxRow
     public string Payload { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? AckedAt { get; set; }
+
+    /// <summary>
+    /// Whether this command should wait for its machine. A durable row replays on the
+    /// next stream; a transient one is delivered live if anyone is listening and never
+    /// again, because its answer had a deadline that a reconnect has already missed.
+    /// </summary>
+    public bool Durable { get; set; } = true;
 }
 
 public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock)
@@ -33,8 +41,18 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
     /// </summary>
     private readonly Dictionary<Guid, List<Channel<RunnerOutboxRow>>> _subscribers = [];
 
-    public async Task<long> EnqueueAsync(Guid machineId, RunnerCommand command, CancellationToken ct)
+    /// <summary>
+    /// Records one outbound command. The envelope carries the current dispatch span's
+    /// W3C id (§1) so the runner continues the same trace: the row is the command's only
+    /// carrier, so a traceparent dropped here is a trace that ends at the plane.
+    /// </summary>
+    public async Task<long> EnqueueAsync(
+        Guid machineId, RunnerCommand command, CancellationToken ct, bool durable = true)
     {
+        // Read before the first await: Activity.Current flows ambiently from the caller's
+        // dispatch span, and reading it after a resumption would sample whatever span the
+        // continuation happens to land in.
+        var traceparent = Activity.Current?.Id;
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
         var row = new RunnerOutboxRow
@@ -42,7 +60,8 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
             MachineId = machineId,
             SessionId = SessionOf(command),
             Kind = KindOf(command),
-            Payload = RunnerWire.EncodeCommand(command),
+            Durable = durable,
+            Payload = RunnerWire.EncodeCommand(command, traceparent),
             CreatedAt = clock.GetUtcNow(),
         };
         db.Set<RunnerOutboxRow>().Add(row);
@@ -56,6 +75,7 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
             SessionId = row.SessionId,
             Kind = row.Kind,
             Payload = row.Payload,
+            Durable = row.Durable,
             CreatedAt = row.CreatedAt,
         });
         return row.Id;
@@ -76,12 +96,15 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
         return true;
     }
 
+    /// <summary>The durable rows this machine has not acknowledged, oldest first — what a
+    /// newly-opened stream replays. Transient rows are excluded: they were for a caller that
+    /// is no longer waiting.</summary>
     public async Task<IReadOnlyList<RunnerOutboxRow>> UnackedAsync(Guid machineId, CancellationToken ct)
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
         return await db.Set<RunnerOutboxRow>().AsNoTracking()
-            .Where(r => r.MachineId == machineId && r.AckedAt == null)
+            .Where(r => r.MachineId == machineId && r.AckedAt == null && r.Durable)
             .OrderBy(r => r.Id)
             .ToListAsync(ct);
     }
@@ -113,16 +136,6 @@ public sealed class RunnerOutbox(IServiceScopeFactory scopes, TimeProvider clock
             channel.Writer.TryComplete();
         });
         return channel.Reader;
-    }
-
-    /// <summary>True once the row has been acknowledged — by a runner, or by the
-    /// socket write that carried the same command down the WebSocket.</summary>
-    public async Task<bool> IsAckedAsync(long id, CancellationToken ct)
-    {
-        await using var scope = scopes.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
-        return await db.Set<RunnerOutboxRow>().AsNoTracking()
-            .AnyAsync(r => r.Id == id && r.AckedAt != null, ct);
     }
 
     private void Publish(RunnerOutboxRow row)

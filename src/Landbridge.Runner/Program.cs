@@ -10,10 +10,11 @@ namespace Landbridge.Runner;
 /// <summary>
 /// The <c>landbridged</c> entrypoint (spec §10). Loads and validates a config,
 /// wires the supervisor / back-pressure / heartbeat / ring, and runs until a
-/// termination signal. The control-plane wire transport is a real outbound
-/// WebSocket (<see cref="WebSocketControlPlaneChannel"/>, §10 — the frozen
-/// interface's real bytes): it dials the plane with a fixed env token or the
-/// enrolled machine credentials, and falls back to a
+/// termination signal. The control-plane wire transport is real outbound HTTP
+/// (<see cref="HttpControlPlaneChannel"/>, §10 — the frozen interface's real
+/// bytes): frames go up as POSTs and commands come down a held-open stream,
+/// authenticated with a fixed env token or the enrolled machine credentials,
+/// falling back to a
 /// <see cref="ConsoleControlPlaneChannel"/> that mirrors events to the console
 /// only when neither a URL nor credentials are configured. The daemon logic —
 /// stray reaping, reboot announcement, back-pressure gating, heartbeat cadence —
@@ -104,16 +105,17 @@ public static class Program
         // §10 + §5: dial the control plane outbound. Credential source, in
         // priority order:
         //   1. LANDBRIDGE_MACHINE_TOKEN env — the Aspire dev loop's fixed token, NEVER
-        //      refreshed (unchanged behaviour). LANDBRIDGE_CONTROL_URL is the ws(s) URL.
+        //      refreshed (unchanged behaviour). LANDBRIDGE_CONTROL_URL is the plane's
+        //      HTTP base.
         //   2. else credentials.json in the state dir — the enrolled machine's
         //      access/refresh pair. The access token is refreshed at half-life and
-        //      on a 401 reconnect (§13); the ws URL is LANDBRIDGE_CONTROL_URL when set,
-        //      else derived from the enrolled HTTP base (http→ws, https→wss, /runner).
+        //      on a 401 (§13); the base is LANDBRIDGE_CONTROL_URL when set, else the
+        //      one the enrollment exchange answered with.
         //   3. else the console placeholder.
         var controlUrl = Environment.GetEnvironmentVariable("LANDBRIDGE_CONTROL_URL");
         var envMachineToken = Environment.GetEnvironmentVariable("LANDBRIDGE_MACHINE_TOKEN");
 
-        WebSocketControlPlaneChannel? wsChannel = null;
+        HttpControlPlaneChannel? planeChannel = null;
         MachineTokenRefresher? refresher = null;
         HttpClient? refreshHttp = null;
         IControlPlaneChannel channel;
@@ -128,8 +130,9 @@ public static class Program
             }
             else
             {
-                wsChannel = new WebSocketControlPlaneChannel(new Uri(controlUrl), envMachineToken, clock, Console.WriteLine);
-                channel = wsChannel;
+                planeChannel = new HttpControlPlaneChannel(
+                    new Uri(controlUrl), envMachineToken, clock, Console.WriteLine);
+                channel = planeChannel;
                 channelMode = controlUrl;
             }
         }
@@ -144,14 +147,13 @@ public static class Program
                 clock,
                 Console.WriteLine);
 
-            var wsUri = !string.IsNullOrWhiteSpace(controlUrl)
-                ? new Uri(controlUrl)
-                : CredentialStore.DeriveRunnerWsUrl(creds.ControlUrl);
-            wsChannel = new WebSocketControlPlaneChannel(
-                wsUri, () => refresher.CurrentAccessToken, clock, Console.WriteLine,
+            var planeUri = new Uri(
+                !string.IsNullOrWhiteSpace(controlUrl) ? controlUrl : creds.ControlUrl);
+            planeChannel = new HttpControlPlaneChannel(
+                planeUri, () => refresher.CurrentAccessToken, clock, Console.WriteLine,
                 onAuthRejected: refresher.RefreshOnceAsync);
-            channel = wsChannel;
-            channelMode = wsUri.ToString();
+            channel = planeChannel;
+            channelMode = planeUri.ToString();
             refresher.Start();
         }
         else
@@ -193,7 +195,7 @@ public static class Program
                 log: line);
             return new LandbridgedHost(
                 daemon, processes, config, machineId, channelMode, log,
-                wsChannel, identity, refresher, refreshHttp, otelExport);
+                planeChannel, identity, refresher, refreshHttp, otelExport);
         });
         hostBuilder.Services.AddHostedService(sp => sp.GetRequiredService<LandbridgedHost>());
 

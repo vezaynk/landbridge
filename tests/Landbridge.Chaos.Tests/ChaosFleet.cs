@@ -1,4 +1,4 @@
-using System.Net.WebSockets;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -201,7 +201,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
             ["--config", _configPath, "--state-dir", _stateDir],
             new Dictionary<string, string>
             {
-                ["LANDBRIDGE_CONTROL_URL"] = WsRunnerUrl(_planeUrl),
+                ["LANDBRIDGE_CONTROL_URL"] = _planeUrl,
                 // §13: the machine token travels in the environment, never in argv.
                 ["LANDBRIDGE_MACHINE_TOKEN"] = _machineToken,
                 ["LANDBRIDGE_MACHINE_ID"] = MachineId,
@@ -429,25 +429,44 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     }
 
     /// <summary>
-    /// Dials the plane's real <c>/runner</c> WebSocket with the machine's own credential and
-    /// hands back the socket, without sending anything on it (§10, §13: the token travels in
-    /// the header, as <c>landbridged</c>'s own channel sends it).
+    /// Opens the plane's real <c>GET /runner/events</c> stream with the machine's own
+    /// credential and hands it back, posting nothing (§10, §13: the token travels in the
+    /// header, as <c>landbridged</c>'s own channel sends it).
     ///
-    /// <para>This is the closest deterministic stand-in for the half-open socket §17.8's
-    /// closed-laptop case produces. A genuinely half-open TCP connection needs packets
-    /// dropped in the network — root-only and unportable — but what the PLANE sees is the
-    /// thing under test: an accepted <c>/runner</c> connection, authenticated as this machine,
-    /// that is registered and then never carries another byte. Sending no heartbeat is what
-    /// makes it faithful as well as convenient: a stale connection reports nothing, so it
-    /// never becomes ready and dispatch never considers it.</para>
+    /// <para>This is the closest deterministic stand-in for what §17.8's closed-laptop case
+    /// produces. A genuinely half-open TCP connection needs packets dropped in the network —
+    /// root-only and unportable — but what the PLANE sees is the thing under test: an
+    /// accepted stream, authenticated as this machine, registered and then never carrying
+    /// another byte. Sending no heartbeat is what makes it faithful as well as convenient: a
+    /// stale connection reports nothing, so it never becomes ready and dispatch never
+    /// considers it.</para>
     /// </summary>
-    public async Task<ClientWebSocket> DialRunnerAsync(CancellationToken ct)
+    public async Task<StaleStream> DialRunnerAsync(CancellationToken ct)
     {
-        var socket = new ClientWebSocket();
-        socket.Options.SetRequestHeader("Authorization", $"Bearer {_machineToken}");
-        await socket.ConnectAsync(new Uri(WsRunnerUrl(_planeUrl)), ct);
-        Note("dialed a second /runner connection for the same machine");
-        return socket;
+        var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        var request = new HttpRequestMessage(HttpMethod.Get, _planeUrl.TrimEnd('/') + "/runner/events");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _machineToken);
+        // Headers only: the response body stays open, which is what keeps the plane holding
+        // this connection registered.
+        var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode();
+        Note("opened a second /runner/events stream for the same machine");
+        return new StaleStream(http, response);
+    }
+
+    /// <summary>A command stream held open and then dropped, standing in for the socket a
+    /// closed laptop leaves behind. <see cref="Abort"/> drops it without a graceful end.</summary>
+    public sealed class StaleStream(HttpClient http, HttpResponseMessage response) : IDisposable
+    {
+        public void Abort()
+        {
+            // Disposing the client kills the connection under the response, which is what the
+            // plane sees when the laptop's TCP finally gives up.
+            response.Dispose();
+            http.Dispose();
+        }
+
+        public void Dispose() => Abort();
     }
 
     /// <summary>
@@ -660,9 +679,6 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     }
 
     /// <summary>http→ws on the plane's own base, the §10 runner path.</summary>
-    private static string WsRunnerUrl(string httpBase) =>
-        "ws" + httpBase["http".Length..].TrimEnd('/') + "/runner";
-
     /// <summary>TimeSpan config must be written out in full: a bare number parses as DAYS.</summary>
     private static string Fmt(TimeSpan value) => value.ToString(@"hh\:mm\:ss\.fff");
 
