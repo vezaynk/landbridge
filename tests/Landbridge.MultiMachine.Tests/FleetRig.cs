@@ -616,6 +616,11 @@ internal sealed class FleetRig(
             Ready: _ready.GetValueOrDefault(wire), UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: machine.Supervisor.RunningTotal, ["default"],
             DateTimeOffset.UtcNow,
+            // Every rig machine answers read-transcript off a real TranscriptReader over the
+            // real captured files, so it says so — the plane reads this to decide whether
+            // asking is worth the wait (§12), and a machine that serves but reports
+            // otherwise would be refused something it can do.
+            TranscriptsServable: true,
             Processes: machine.Daemon.ReportProcesses());
         using var db = pg.NewContext();
         HubOutbox.WriteHeartbeatAsync(db, TimeProvider.System, wire, beat, CancellationToken.None)
