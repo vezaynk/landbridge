@@ -186,6 +186,10 @@ public static class DashboardTranscriptEndpoints
             TranscriptUnavailable.NotTerminal => StatusCodes.Status409Conflict,
             TranscriptUnavailable.Busy => StatusCodes.Status409Conflict,
             TranscriptUnavailable.MachineRefused => StatusCodes.Status404NotFound,
+            // Not "try again later": this machine does not serve transcripts, and will not
+            // start because the caller retried. The remaining reasons — offline, timeout —
+            // are the ones a retry can actually clear.
+            TranscriptUnavailable.NotServable => StatusCodes.Status404NotFound,
             _ => StatusCodes.Status503ServiceUnavailable,
         };
         return DashboardHosting.RazorPage<Components.Pages.TranscriptUnavailablePage>(
