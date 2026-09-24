@@ -27,7 +27,7 @@ with that worker (§7, §9 check 4) — there is no verifier process.
   │  DispatchService · WaitTtlSweeper · TokenService · DashboardQueries      │
   └───────────────┬──────────────────────────────────────────┬─────────────┘
                   │  Postgres (per Instance)                   │ runner channel
-                  ▼  SKIP LOCKED dispatch · LISTEN/NOTIFY       │ (WebSocket, frozen §10 vocab)
+                  ▼  SKIP LOCKED dispatch · LISTEN/NOTIFY       │ (HTTP + SSE, frozen §10 vocab)
           ┌───────────────┐                            ┌───────┴───────────────┐
           │  tasks, events│                            │  landbridged (Machine A)  │
           │  credentials  │                            │  ProcessSupervisor    │
@@ -45,7 +45,7 @@ with that worker (§7, §9 check 4) — there is no verifier process.
 ```
 
 - **`Landbridge.Mcp`** is the single ASP.NET process (`landbridge` + `landbridge-mcp` in spec
-  terms). It hosts the MCP tool endpoint, the `/runner` WebSocket, the OAuth
+  terms). It hosts the MCP tool endpoint, the `/runner/*` machine endpoints, the OAuth
   authorization-server endpoints, `/enroll` + `/machine/refresh`,
   `/relay/validate`, and the web dashboard. It owns one Postgres
   database and is the *only* path to the state machine — there is no

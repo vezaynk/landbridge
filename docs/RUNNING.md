@@ -207,8 +207,8 @@ State-dir resolution order: `--state-dir` → `$LANDBRIDGE_STATE_DIR` →
 `$XDG_STATE_HOME/landbridge` → `~/.landbridge`.
 
 Then run the daemon against a config (see below); it loads the stored
-credentials, derives the `/runner` WebSocket URL from the saved control URL, and
-connects:
+credentials, POSTs its frames to `/runner/ingest` on the saved control URL, and
+holds `/runner/events` open for commands:
 
 ```bash
 landbridged --config /etc/landbridged/config.json --state-dir /var/lib/landbridged
