@@ -83,9 +83,10 @@ public sealed class HttpControlPlaneChannel : IControlPlaneChannel, IAsyncDispos
     }
 
     public Task<bool> PublishAsync(RunnerEvent evt, long gapBefore, CancellationToken ct) =>
-        // The gap marker is carried locally by the ring; the frozen event vocabulary has
-        // no gap field, so it is not transmitted (documented gap).
-        IngestAsync(RunnerWire.EncodeEvent(evt), ct);
+        // The gap marker rides the envelope as transport metadata (RunnerWire.Gap), so the
+        // plane learns what this machine dropped rather than the count staying a local
+        // statistic nobody can see.
+        IngestAsync(RunnerWire.EncodeEvent(evt, gapBefore), ct);
 
     public Task<bool> HeartbeatAsync(MachineHeartbeat heartbeat, CancellationToken ct) =>
         IngestAsync(RunnerWire.EncodeHeartbeat(heartbeat), ct);

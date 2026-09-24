@@ -181,6 +181,12 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasIndex(m => m.Slug).IsUnique().HasDatabaseName(MachineSlugIndex);
             e.Property(m => m.Slug).IsRequired();
             e.HasIndex(m => m.LastSpokeAt);
+            // Last-value heartbeat columns. A machine exists from enrollment, before it has
+            // ever spoken, so each needs the value a silent machine has.
+            e.Property(m => m.Ready).HasDefaultValue(false);
+            e.Property(m => m.UnderBackPressure).HasDefaultValue(false);
+            e.Property(m => m.Profiles).HasDefaultValue(Array.Empty<string>());
+            e.Property(m => m.TranscriptsServable).HasDefaultValue(false);
         });
 
         b.Entity<MachineProcessRow>(e =>
@@ -189,6 +195,13 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasKey(p => p.Id);
             e.HasIndex(p => new { p.MachineId, p.Name }).IsUnique();
             e.HasIndex(p => p.MachineId);
+            // A process row describes a machine and cannot outlive it. Declared here
+            // because it was previously only in a hand-written migration: the model did
+            // not know about it, so anything generated from the model dropped it.
+            e.HasOne<MachineRow>()
+                .WithMany()
+                .HasForeignKey(p => p.MachineId)
+                .OnDelete(DeleteBehavior.Cascade);
             e.Property(p => p.Name).IsRequired();
             e.Property(p => p.State).IsRequired();
         });
@@ -244,6 +257,8 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasIndex(m => m.LabelHash).IsUnique();
             e.Property(m => m.AuthPolicy).HasConversion<string>();
             e.Property(m => m.Ttl).HasColumnType("interval");
+            // Added after the table existed, so rows predating it read as unlabelled.
+            e.Property(m => m.Label).HasDefaultValue("");
         });
 
         b.Entity<OAuthAuthorizationCodeRow>(e =>

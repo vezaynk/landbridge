@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Landbridge.ControlPlane.Migrations
 {
     [DbContext(typeof(LandbridgeDbContext))]
-    [Migration("20260902204909_InitialSchema")]
+    [Migration("20260923233236_InitialSchema")]
     partial class InitialSchema
     {
         /// <inheritdoc />
@@ -60,6 +60,10 @@ namespace Landbridge.ControlPlane.Migrations
                     b.Property<Guid?>("MachineId")
                         .HasColumnType("uuid")
                         .HasColumnName("machine_id");
+
+                    b.Property<string>("Resource")
+                        .HasColumnType("text")
+                        .HasColumnName("resource");
 
                     b.Property<bool>("Revoked")
                         .HasColumnType("boolean")
@@ -229,6 +233,10 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("enrolled_at");
 
+                    b.Property<DateTimeOffset?>("LastSpokeAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_spoke_at");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text")
@@ -238,6 +246,19 @@ namespace Landbridge.ControlPlane.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("os");
+
+                    b.PrimitiveCollection<string[]>("Profiles")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text[]")
+                        .HasDefaultValue(new string[0])
+                        .HasColumnName("profiles");
+
+                    b.Property<bool>("Ready")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("ready");
 
                     b.Property<bool>("Revoked")
                         .HasColumnType("boolean")
@@ -252,8 +273,23 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("slug");
 
+                    b.Property<bool>("TranscriptsServable")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("transcripts_servable");
+
+                    b.Property<bool>("UnderBackPressure")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("under_back_pressure");
+
                     b.HasKey("Id")
                         .HasName("pk_machines");
+
+                    b.HasIndex("LastSpokeAt")
+                        .HasDatabaseName("ix_machines_last_spoke_at");
 
                     b.HasIndex("Slug")
                         .IsUnique()
@@ -330,6 +366,14 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("consumer_instance_id");
 
+                    b.Property<Guid?>("ConsumerMachine")
+                        .HasColumnType("uuid")
+                        .HasColumnName("consumer_machine");
+
+                    b.Property<int?>("ConsumerPort")
+                        .HasColumnType("integer")
+                        .HasColumnName("consumer_port");
+
                     b.Property<Guid?>("ConsumerSessionId")
                         .HasColumnType("uuid")
                         .HasColumnName("consumer_session_id");
@@ -379,6 +423,9 @@ namespace Landbridge.ControlPlane.Migrations
                     b.HasKey("Id")
                         .HasName("pk_relay_grants");
 
+                    b.HasIndex("ConsumerMachine")
+                        .HasDatabaseName("ix_relay_grants_consumer_machine");
+
                     b.HasIndex("ForwardId")
                         .IsUnique()
                         .HasDatabaseName("ix_relay_grants_forward_id");
@@ -391,6 +438,94 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasDatabaseName("ix_relay_grants_producer_session_id");
 
                     b.ToTable("relay_grants", (string)null);
+                });
+
+            modelBuilder.Entity("Landbridge.ControlPlane.CommandRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("AcceptedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("accepted_at");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_id");
+
+                    b.Property<string>("ActorKind")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("actor_kind");
+
+                    b.Property<DateTimeOffset?>("AppliedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("applied_at");
+
+                    b.Property<DateTimeOffset?>("ClaimedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("claimed_at");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasColumnType("text")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Rule")
+                        .HasColumnType("text")
+                        .HasColumnName("rule");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("Slug")
+                        .HasColumnType("text")
+                        .HasColumnName("slug");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TeamId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("team_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_command_queue");
+
+                    b.HasIndex("SessionId")
+                        .HasDatabaseName("ix_command_queue_session_id");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_command_queue_status")
+                        .HasFilter("status = 'queued'");
+
+                    b.HasIndex("TeamId")
+                        .HasDatabaseName("ix_command_queue_team_id");
+
+                    b.HasIndex("ActorKind", "ActorId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ix_command_queue_actor_kind_actor_id_idempotency_key")
+                        .HasFilter("idempotency_key IS NOT NULL");
+
+                    b.ToTable("command_queue", (string)null);
                 });
 
             modelBuilder.Entity("Landbridge.ControlPlane.FrictionReportRow", b =>
@@ -440,6 +575,99 @@ namespace Landbridge.ControlPlane.Migrations
                     b.ToTable("friction_reports", (string)null);
                 });
 
+            modelBuilder.Entity("Landbridge.ControlPlane.HubQueueRow", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("EntityId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entity_id");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<string>("Topic")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("topic");
+
+                    b.HasKey("Id")
+                        .HasName("pk_hub_queue");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_hub_queue_created_at");
+
+                    b.HasIndex("Topic", "EntityId", "Id")
+                        .HasDatabaseName("ix_hub_queue_topic_entity_id_id");
+
+                    b.ToTable("hub_queue", (string)null);
+                });
+
+            modelBuilder.Entity("Landbridge.ControlPlane.MachineProcessRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("DeclaredBySession")
+                        .HasColumnType("uuid")
+                        .HasColumnName("declared_by_session");
+
+                    b.Property<int?>("ExitCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("exit_code");
+
+                    b.Property<DateTimeOffset?>("ExitedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("exited_at");
+
+                    b.Property<Guid>("MachineId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("machine_id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("state");
+
+                    b.Property<bool>("StdinOpen")
+                        .HasColumnType("boolean")
+                        .HasColumnName("stdin_open");
+
+                    b.HasKey("Id")
+                        .HasName("pk_machine_processes");
+
+                    b.HasIndex("MachineId")
+                        .HasDatabaseName("ix_machine_processes_machine_id");
+
+                    b.HasIndex("MachineId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_machine_processes_machine_id_name");
+
+                    b.ToTable("machine_processes", (string)null);
+                });
+
             modelBuilder.Entity("Landbridge.ControlPlane.PreviewMappingRow", b =>
                 {
                     b.Property<Guid>("Id")
@@ -455,6 +683,13 @@ namespace Landbridge.ControlPlane.Migrations
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("")
+                        .HasColumnName("label");
 
                     b.Property<string>("LabelHash")
                         .IsRequired()
@@ -529,6 +764,57 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasDatabaseName("ix_registered_services_team_id_name");
 
                     b.ToTable("registered_services", (string)null);
+                });
+
+            modelBuilder.Entity("Landbridge.ControlPlane.RunnerOutboxRow", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset?>("AckedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("acked_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("Durable")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("durable");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("kind");
+
+                    b.Property<Guid>("MachineId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("machine_id");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<Guid?>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_runner_outbox");
+
+                    b.HasIndex("MachineId")
+                        .HasDatabaseName("ix_runner_outbox_machine_id")
+                        .HasFilter("acked_at IS NULL");
+
+                    b.ToTable("runner_outbox", (string)null);
                 });
 
             modelBuilder.Entity("Landbridge.ControlPlane.SessionEventRow", b =>
@@ -739,8 +1025,8 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("on_machine_gone");
 
-                    b.Property<string>("ParkMachine")
-                        .HasColumnType("text")
+                    b.Property<Guid?>("ParkMachine")
+                        .HasColumnType("uuid")
                         .HasColumnName("park_machine");
 
                     b.Property<string>("PendingSpawn")
@@ -771,8 +1057,8 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("permission_verdict");
 
-                    b.Property<string>("PreferredMachine")
-                        .HasColumnType("text")
+                    b.Property<Guid?>("PreferredMachine")
+                        .HasColumnType("uuid")
                         .HasColumnName("preferred_machine");
 
                     b.Property<string>("Profile")
@@ -944,8 +1230,8 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
-                    b.Property<string>("MachineId")
-                        .HasColumnType("text")
+                    b.Property<Guid?>("MachineId")
+                        .HasColumnType("uuid")
                         .HasColumnName("machine_id");
 
                     b.Property<bool>("Revoked")
@@ -967,6 +1253,16 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasDatabaseName("ix_worker_instances_session_id");
 
                     b.ToTable("worker_instances", (string)null);
+                });
+
+            modelBuilder.Entity("Landbridge.ControlPlane.MachineProcessRow", b =>
+                {
+                    b.HasOne("Landbridge.ControlPlane.Auth.MachineRow", null)
+                        .WithMany()
+                        .HasForeignKey("MachineId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_machine_processes_machines_machine_id");
                 });
 #pragma warning restore 612, 618
         }

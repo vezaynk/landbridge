@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Landbridge.Core;
 
 namespace Landbridge.Contracts.Tests;
@@ -136,15 +137,54 @@ public class RunnerWireTests
         Assert.Equal(original, decoded);
     }
 
+    /// <summary>
+    /// An envelope carrying only the frozen §10 fields still decodes. Asserted against the
+    /// JSON rather than against a C# constructor default, because the wire is where the
+    /// tolerance has to hold — a sender that omits a property is the case this covers, and
+    /// a record default would make the test pass without the decoder doing anything.
+    /// </summary>
+    /// <summary>
+    /// The ring's gap marker rides the envelope. Dropped events are gone — the ring is the
+    /// only outbound buffer (§10, §15) — so the count is the whole record that they ever
+    /// existed, and it has to reach the plane to be worth keeping.
+    /// </summary>
     [Fact]
-    public void Open_forward_command_round_trips_with_only_the_frozen_required_fields()
+    public void An_event_carries_the_rings_gap_marker()
     {
-        var original = new OpenForwardCommand(SessionId.New(), "fwd-1", "postgres");
+        var evt = new StartedEvent(SessionId.New(), DateTimeOffset.UtcNow);
 
-        var decoded = Assert.IsType<OpenForwardCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
+        var decoded = RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(evt, gapBefore: 7), out var gap);
 
-        Assert.Equal(original, decoded);
-        // The increment-3 additions default to empty/0 when the sender set none.
+        Assert.Equal(evt, Assert.IsType<StartedEvent>(decoded));
+        Assert.Equal(7, gap);
+    }
+
+    /// <summary>
+    /// Nothing dropped means no marker on the envelope at all, which is the ordinary case —
+    /// the wire stays exactly as it was for every event that follows another cleanly.
+    /// </summary>
+    [Fact]
+    public void An_event_with_no_gap_carries_no_marker()
+    {
+        var encoded = RunnerWire.EncodeEvent(new StartedEvent(SessionId.New(), DateTimeOffset.UtcNow));
+
+        Assert.DoesNotContain(RunnerWire.Gap, JsonNode.Parse(encoded)!.AsObject().Select(p => p.Key));
+        Assert.NotNull(RunnerWire.DecodeEvent(encoded, out var gap));
+        Assert.Equal(0, gap);
+    }
+
+    [Fact]
+    public void Open_forward_command_decodes_when_the_data_plane_fields_are_absent()
+    {
+        var full = JsonNode.Parse(RunnerWire.EncodeCommand(new OpenForwardCommand(
+            SessionId.New(), "fwd-1", "postgres",
+            Role: "producer", Grant: "lbr_g_abc", RelayUrl: "http://127.0.0.1:5100", Port: 5432)))!.AsObject();
+        foreach (var absent in new[] { "role", "grant", "relay_url", "port" })
+            full.Remove(absent);
+
+        var decoded = Assert.IsType<OpenForwardCommand>(RunnerWire.DecodeCommand(full.ToJsonString()));
+
+        Assert.Equal("fwd-1", decoded.ForwardId);
         Assert.Equal("", decoded.Role);
         Assert.Equal("", decoded.Grant);
         Assert.Equal("", decoded.RelayUrl);

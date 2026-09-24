@@ -238,6 +238,14 @@ public sealed class MachineRow
 
     /// <summary>Declared profiles on the last heartbeat.</summary>
     public string[] Profiles { get; set; } = [];
+
+    /// <summary>
+    /// Whether this machine can answer <c>read-transcript</c> (§12), as of
+    /// <see cref="LastSpokeAt"/>. A runner that cannot rejects the command at the wire
+    /// boundary and never replies, which is indistinguishable from a slow machine — so
+    /// the plane reads this instead of waiting to find out.
+    /// </summary>
+    public bool TranscriptsServable { get; set; }
 }
 
 

@@ -519,7 +519,7 @@ public static class SessionStateMachine
     {
         if (task.OccupancyDesired == Occupancy.OnDisk && task.OccupancyObserved != Occupancy.Running)
             return Done(task with { Park = c.Park }, new WriteParkRecord(c.Park));
-        return Deactivate(task, c.Park, actorChecked: true);
+        return Deactivate(task, c.Park);
     }
 
     private static TransitionResult ApplyPark(SessionRecord task, Park c)
@@ -534,12 +534,11 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "park is for the Lead of this Team or a human");
 
-        return Deactivate(task, c.Record, actorChecked: true);
+        return Deactivate(task, c.Record);
     }
 
-    private static TransitionResult Deactivate(SessionRecord task, ParkRecord park, bool actorChecked)
+    private static TransitionResult Deactivate(SessionRecord task, ParkRecord park)
     {
-        _ = actorChecked;
         if (task.Health == SessionHealth.Failed)
             return TransitionResult.Reject(Rule.InvalidSourceState,
                 "deactivate is refused on health=failed; retry or leave the inbox");
@@ -687,7 +686,7 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "preserve_and_park is a Lead stop disposition");
 
-        return Deactivate(task, c.Park, actorChecked: true);
+        return Deactivate(task, c.Park);
     }
 
     private static TransitionResult ApplyPullReceipt(SessionRecord task, PullReceipt c)

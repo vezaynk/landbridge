@@ -13,6 +13,31 @@ namespace Landbridge.ControlPlane.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
+                name: "command_queue",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    idempotency_key = table.Column<string>(type: "text", nullable: true),
+                    actor_kind = table.Column<string>(type: "text", nullable: false),
+                    actor_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    session_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    team_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    kind = table.Column<string>(type: "text", nullable: false),
+                    payload = table.Column<string>(type: "jsonb", nullable: false),
+                    status = table.Column<string>(type: "text", nullable: false),
+                    rule = table.Column<string>(type: "text", nullable: true),
+                    reason = table.Column<string>(type: "text", nullable: true),
+                    slug = table.Column<string>(type: "text", nullable: true),
+                    accepted_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    claimed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    applied_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("pk_command_queue", x => x.id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "credentials",
                 columns: table => new
                 {
@@ -24,6 +49,7 @@ namespace Landbridge.ControlPlane.Migrations
                     session_id = table.Column<Guid>(type: "uuid", nullable: true),
                     worker_instance_id = table.Column<Guid>(type: "uuid", nullable: true),
                     human_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    resource = table.Column<string>(type: "text", nullable: true),
                     created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     used_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
@@ -53,6 +79,22 @@ namespace Landbridge.ControlPlane.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("pk_friction_reports", x => x.seq);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "hub_queue",
+                columns: table => new
+                {
+                    id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
+                    topic = table.Column<string>(type: "text", nullable: false),
+                    entity_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    payload = table.Column<string>(type: "jsonb", nullable: false),
+                    created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("pk_hub_queue", x => x.id);
                 });
 
             migrationBuilder.CreateTable(
@@ -111,8 +153,13 @@ namespace Landbridge.ControlPlane.Migrations
                     os = table.Column<string>(type: "text", nullable: false),
                     enrolled_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     revoked = table.Column<bool>(type: "boolean", nullable: false),
+                    slug = table.Column<string>(type: "text", nullable: false),
                     revoked_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
-                    slug = table.Column<string>(type: "text", nullable: false)
+                    last_spoke_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    ready = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
+                    under_back_pressure = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false),
+                    profiles = table.Column<string[]>(type: "text[]", nullable: false, defaultValue: new string[0]),
+                    transcripts_servable = table.Column<bool>(type: "boolean", nullable: false, defaultValue: false)
                 },
                 constraints: table =>
                 {
@@ -145,6 +192,7 @@ namespace Landbridge.ControlPlane.Migrations
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     label_hash = table.Column<string>(type: "text", nullable: false),
+                    label = table.Column<string>(type: "text", nullable: false, defaultValue: ""),
                     team_id = table.Column<Guid>(type: "uuid", nullable: false),
                     session_id = table.Column<Guid>(type: "uuid", nullable: false),
                     service_name = table.Column<string>(type: "text", nullable: false),
@@ -190,11 +238,32 @@ namespace Landbridge.ControlPlane.Migrations
                     expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     used_by_consumer_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     used_by_producer_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
-                    revoked = table.Column<bool>(type: "boolean", nullable: false)
+                    revoked = table.Column<bool>(type: "boolean", nullable: false),
+                    consumer_machine = table.Column<Guid>(type: "uuid", nullable: true),
+                    consumer_port = table.Column<int>(type: "integer", nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("pk_relay_grants", x => x.id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "runner_outbox",
+                columns: table => new
+                {
+                    id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
+                    machine_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    session_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    kind = table.Column<string>(type: "text", nullable: false),
+                    payload = table.Column<string>(type: "jsonb", nullable: false),
+                    created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    acked_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    durable = table.Column<bool>(type: "boolean", nullable: false, defaultValue: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("pk_runner_outbox", x => x.id);
                 });
 
             migrationBuilder.CreateTable(
@@ -278,7 +347,7 @@ namespace Landbridge.ControlPlane.Migrations
                     infrastructure_requeue_limit = table.Column<int>(type: "integer", nullable: false),
                     last_requeue_reason = table.Column<string>(type: "text", nullable: true),
                     current_instance_id = table.Column<Guid>(type: "uuid", nullable: true),
-                    park_machine = table.Column<string>(type: "text", nullable: true),
+                    park_machine = table.Column<Guid>(type: "uuid", nullable: true),
                     blocked_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     input_kind = table.Column<string>(type: "text", nullable: true),
                     input_question = table.Column<string>(type: "text", nullable: true),
@@ -296,7 +365,7 @@ namespace Landbridge.ControlPlane.Migrations
                     harness_session_ref = table.Column<string>(type: "text", nullable: true),
                     continues_session_id = table.Column<Guid>(type: "uuid", nullable: true),
                     work_dir_session_id = table.Column<Guid>(type: "uuid", nullable: true),
-                    preferred_machine = table.Column<string>(type: "text", nullable: true),
+                    preferred_machine = table.Column<Guid>(type: "uuid", nullable: true),
                     on_machine_gone = table.Column<string>(type: "text", nullable: true),
                     completion_provenance = table.Column<string>(type: "text", nullable: true),
                     xmin = table.Column<uint>(type: "xid", rowVersion: true, nullable: false)
@@ -328,12 +397,60 @@ namespace Landbridge.ControlPlane.Migrations
                     revoked = table.Column<bool>(type: "boolean", nullable: false),
                     created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     revoked_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
-                    machine_id = table.Column<string>(type: "text", nullable: true)
+                    machine_id = table.Column<Guid>(type: "uuid", nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("pk_worker_instances", x => x.id);
                 });
+
+            migrationBuilder.CreateTable(
+                name: "machine_processes",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    machine_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    name = table.Column<string>(type: "text", nullable: false),
+                    state = table.Column<string>(type: "text", nullable: false),
+                    declared_by_session = table.Column<Guid>(type: "uuid", nullable: false),
+                    started_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    exit_code = table.Column<int>(type: "integer", nullable: true),
+                    exited_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    stdin_open = table.Column<bool>(type: "boolean", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("pk_machine_processes", x => x.id);
+                    table.ForeignKey(
+                        name: "fk_machine_processes_machines_machine_id",
+                        column: x => x.machine_id,
+                        principalTable: "machines",
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "ix_command_queue_actor_kind_actor_id_idempotency_key",
+                table: "command_queue",
+                columns: new[] { "actor_kind", "actor_id", "idempotency_key" },
+                unique: true,
+                filter: "idempotency_key IS NOT NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_command_queue_session_id",
+                table: "command_queue",
+                column: "session_id");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_command_queue_status",
+                table: "command_queue",
+                column: "status",
+                filter: "status = 'queued'");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_command_queue_team_id",
+                table: "command_queue",
+                column: "team_id");
 
             migrationBuilder.CreateIndex(
                 name: "ix_credentials_machine_id",
@@ -355,6 +472,16 @@ namespace Landbridge.ControlPlane.Migrations
                 name: "ix_friction_reports_team_id",
                 table: "friction_reports",
                 column: "team_id");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_hub_queue_created_at",
+                table: "hub_queue",
+                column: "created_at");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_hub_queue_topic_entity_id_id",
+                table: "hub_queue",
+                columns: new[] { "topic", "entity_id", "id" });
 
             migrationBuilder.CreateIndex(
                 name: "ix_lead_events_team_id",
@@ -387,6 +514,22 @@ namespace Landbridge.ControlPlane.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "ix_machine_processes_machine_id",
+                table: "machine_processes",
+                column: "machine_id");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_machine_processes_machine_id_name",
+                table: "machine_processes",
+                columns: new[] { "machine_id", "name" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "ix_machines_last_spoke_at",
+                table: "machines",
+                column: "last_spoke_at");
+
+            migrationBuilder.CreateIndex(
                 name: "ix_machines_slug",
                 table: "machines",
                 column: "slug",
@@ -416,6 +559,11 @@ namespace Landbridge.ControlPlane.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "ix_relay_grants_consumer_machine",
+                table: "relay_grants",
+                column: "consumer_machine");
+
+            migrationBuilder.CreateIndex(
                 name: "ix_relay_grants_forward_id",
                 table: "relay_grants",
                 column: "forward_id",
@@ -431,6 +579,12 @@ namespace Landbridge.ControlPlane.Migrations
                 name: "ix_relay_grants_producer_session_id",
                 table: "relay_grants",
                 column: "producer_session_id");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_runner_outbox_machine_id",
+                table: "runner_outbox",
+                column: "machine_id",
+                filter: "acked_at IS NULL");
 
             migrationBuilder.CreateIndex(
                 name: "ix_session_events_session_id",
@@ -449,16 +603,16 @@ namespace Landbridge.ControlPlane.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "ix_sessions_slug",
-                table: "sessions",
-                column: "slug",
-                unique: true);
-
-            migrationBuilder.CreateIndex(
                 name: "ix_sessions_profile_occupancy_desired_occupancy_observed_health",
                 table: "sessions",
                 columns: new[] { "profile", "occupancy_desired", "occupancy_observed", "health" },
                 filter: "occupancy_desired = 'Running' AND health = 'Ok' AND hidden = false AND occupancy_observed IN ('None','OnDisk') AND current_instance_id IS NULL AND pending_spawn IN ('New','Load')");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_sessions_slug",
+                table: "sessions",
+                column: "slug",
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "ix_sessions_state_profile",
@@ -486,10 +640,16 @@ namespace Landbridge.ControlPlane.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
+                name: "command_queue");
+
+            migrationBuilder.DropTable(
                 name: "credentials");
 
             migrationBuilder.DropTable(
                 name: "friction_reports");
+
+            migrationBuilder.DropTable(
+                name: "hub_queue");
 
             migrationBuilder.DropTable(
                 name: "lead_events");
@@ -501,7 +661,7 @@ namespace Landbridge.ControlPlane.Migrations
                 name: "lead_teams");
 
             migrationBuilder.DropTable(
-                name: "machines");
+                name: "machine_processes");
 
             migrationBuilder.DropTable(
                 name: "oauth_authorization_codes");
@@ -514,6 +674,9 @@ namespace Landbridge.ControlPlane.Migrations
 
             migrationBuilder.DropTable(
                 name: "relay_grants");
+
+            migrationBuilder.DropTable(
+                name: "runner_outbox");
 
             migrationBuilder.DropTable(
                 name: "session_events");
@@ -529,6 +692,9 @@ namespace Landbridge.ControlPlane.Migrations
 
             migrationBuilder.DropTable(
                 name: "worker_instances");
+
+            migrationBuilder.DropTable(
+                name: "machines");
         }
     }
 }
