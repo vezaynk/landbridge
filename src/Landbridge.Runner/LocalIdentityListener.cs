@@ -12,8 +12,19 @@ namespace Landbridge.Runner;
 /// <remarks>
 /// Port <see cref="Port"/> is the well-known address
 /// (<c>http://127.0.0.1:19378</c>). <see cref="HttpListener"/> is BCL (no ASP.NET)
-/// and AOT-clean; prefixes are <c>127.0.0.1</c> and, when the OS allows,
-/// <c>[::1]</c> so <c>localhost</c> works.
+/// and AOT-clean.
+///
+/// <para><b>The address is the IPv4 literal, everywhere it is published</b> — the
+/// startup line, RUNNING, the enroll and lead skills, and the dashboard's Connect page
+/// all say <c>http://127.0.0.1:19378</c>. That is deliberate rather than incidental:
+/// <c>HttpListener</c> on Unix rejects an <c>[::1]</c> prefix at the parser ("Invalid
+/// port in prefix"), so there is no IPv6 listener to reach on macOS or Linux, and
+/// <c>localhost</c> resolves to <c>::1</c> first on both. Anyone improvising
+/// <c>localhost:19378</c> there gets connection refused.</para>
+///
+/// <para>Windows is backed by http.sys and does take the prefix, so it is offered when
+/// it will be accepted. Making <c>localhost</c> work on Unix would mean replacing
+/// <c>HttpListener</c>, which is a large price for a spelling nothing documents.</para>
 /// </remarks>
 public sealed class LocalIdentityListener : IAsyncDisposable
 {
@@ -41,21 +52,27 @@ public sealed class LocalIdentityListener : IAsyncDisposable
     }
 
     /// <summary>
-    /// Production bind: IPv4 loopback on <paramref name="port"/>, and IPv6 loopback
-    /// when the OS has it. Returns null when IPv4 cannot bind — the daemon still
-    /// runs; the Lead then uses enroll stdout or the dashboard.
+    /// Production bind: IPv4 loopback on <paramref name="port"/>, plus IPv6 loopback on
+    /// Windows, where <c>HttpListener</c> accepts the prefix. Returns null when IPv4
+    /// cannot bind — the daemon still runs; the Lead then uses enroll stdout or the
+    /// dashboard.
     /// </summary>
     public static LocalIdentityListener? TryBindLoopback(
         string machineId, int port = Port, Action<string>? log = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(machineId);
         var v4 = $"http://127.0.0.1:{port}/";
-        var both = TryStart(machineId, port, [v4, $"http://[::1]:{port}/"]);
-        if (both is not null)
+
+        // Asked for only where it can be granted. On Unix this prefix is rejected by the
+        // parser rather than by the network stack, so attempting it there is an exception
+        // thrown and swallowed on every start — and, read as "when the OS allows", it
+        // suggested the fallback was about a machine without IPv6 rather than about the
+        // platform never taking the prefix at all.
+        if (OperatingSystem.IsWindows()
+            && TryStart(machineId, port, [v4, $"http://[::1]:{port}/"]) is { } both)
             return both;
 
-        var ipv4 = TryStart(machineId, port, [v4]);
-        if (ipv4 is not null)
+        if (TryStart(machineId, port, [v4]) is { } ipv4)
             return ipv4;
 
         log?.Invoke($"landbridged: identity http://127.0.0.1:{port} not bound");
