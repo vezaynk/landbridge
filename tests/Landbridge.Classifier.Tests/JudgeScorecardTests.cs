@@ -84,30 +84,51 @@ public sealed class JudgeScorecardTests
     }
 
     /// <summary>
-    /// The model under test. <c>JEV_API_KEY</c> selects Jev, which needs its own judge
-    /// because it is not chat-shaped; otherwise the configured LiteLLM stages are scored,
-    /// which is the baseline the candidate has to beat.
+    /// The model under test. Jev needs its own judge because it is not chat-shaped, and
+    /// LiteLLM carries it as a pass-through rather than through <c>/chat/completions</c>
+    /// — so when a proxy is configured, Jev rides it on <see cref="JevJudge.LiteLlmPath"/>
+    /// with the credential already in use, and no second key is involved.
+    /// Otherwise the configured LiteLLM stages are scored, which is the baseline the
+    /// candidate has to beat.
     /// </summary>
     private static (ILlmJudge? Judge, string Label) Candidate(IConfiguration config)
     {
-        var jevKey = config["JEV_API_KEY"] ?? config["Classifier:Jev:ApiKey"];
-        if (!string.IsNullOrWhiteSpace(jevKey))
+        var loaded = ClassifierSettings.TryLoad(
+            config, AppContext.BaseDirectory, out var settings, out var why);
+
+        var wantsJev = !string.IsNullOrWhiteSpace(config["JEV"])
+            || !string.IsNullOrWhiteSpace(config["JEV_API_KEY"])
+            || !string.IsNullOrWhiteSpace(config["Classifier:Jev:ApiKey"]);
+
+        if (wantsJev)
         {
-            var endpoint = config["Classifier:Jev:Url"]
-                ?? config["JEV_URL"]
-                ?? "https://api.typesafe.ai/v1/systemone";
             var model = config["Classifier:Jev:Model"] ?? config["JEV_MODEL"] ?? "jev-latest";
             var bar = double.TryParse(config["Classifier:Jev:AllowAtOrAbove"], out var parsed)
                 ? parsed
                 : JevJudge.DefaultAllowAtOrAbove;
+
+            // A direct key wins when one is given; otherwise ride the proxy already
+            // configured for the other stages, which is the cheaper thing to try.
+            var directKey = config["JEV_API_KEY"] ?? config["Classifier:Jev:ApiKey"] ?? "";
+            var explicitUrl = config["Classifier:Jev:Url"] ?? config["JEV_URL"];
+
+            var (endpoint, key, route) = explicitUrl is { Length: > 0 }
+                ? (explicitUrl, directKey, "explicit")
+                : loaded
+                    ? (settings.LiteLlm.Url + JevJudge.LiteLlmPath, settings.LiteLlm.ApiKey, "litellm")
+                    : (JevJudge.DirectEndpoint, directKey, "direct");
+
+            if (string.IsNullOrWhiteSpace(key))
+                return (null, "jev needs either a LiteLLM proxy or JEV_API_KEY");
+
             return (
-                new JevJudge(new HttpClient(), endpoint, jevKey, model,
+                new JevJudge(new HttpClient(), endpoint, key, model,
                     NullLogger<JevJudge>.Instance, bar),
-                $"jev model={model} allow>={bar:0.00}");
+                $"jev via {route} model={model} allow>={bar:0.00}");
         }
 
-        return ClassifierSettings.TryLoad(config, AppContext.BaseDirectory, out var settings, out var why)
+        return loaded
             ? (new LlmJudge(settings, NullLogger<LlmJudge>.Instance), $"litellm fast={settings.Fast.Slug}")
-            : (null, $"no candidate configured: set JEV_API_KEY, or classifier settings ({why})");
+            : (null, $"no candidate configured: set JEV=1, or classifier settings ({why})");
     }
 }

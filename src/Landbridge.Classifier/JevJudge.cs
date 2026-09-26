@@ -27,6 +27,18 @@ namespace Landbridge.Classifier;
 public sealed class JevJudge : ILlmJudge
 {
     /// <summary>
+    /// The path LiteLLM forwards to TypeSafe under, appended to the configured proxy
+    /// base. Routing through the proxy rather than <c>api.typesafe.ai</c> directly means
+    /// no second credential to distribute and cost logging alongside every other
+    /// classifier call; LiteLLM records it under the version TypeSafe reports, such as
+    /// <c>typesafe/jev-1.13.0</c>.
+    /// </summary>
+    public const string LiteLlmPath = "/typesafe/v1/systemone";
+
+    /// <summary>The direct endpoint, for a deployment with no proxy in front of it.</summary>
+    public const string DirectEndpoint = "https://api.typesafe.ai/v1/systemone";
+
+    /// <summary>
     /// How sure the model must be that an action is ordinary before it runs unasked.
     /// High on purpose: this is the probability of the <em>safe</em> reading, so
     /// everything short of confidence — including the model having no idea — is an Ask.
