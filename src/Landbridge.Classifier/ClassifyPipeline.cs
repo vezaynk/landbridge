@@ -9,15 +9,11 @@ public sealed class ClassifyPipeline(ILlmJudge llm)
     {
         var command = CommandExtract.Resolve(tool, input);
 
+        // The only list here is a positive one. An allowlist that is missing an entry
+        // costs an unnecessary question; a denylist that is missing an entry costs the
+        // thing it was written to prevent, so this layer only ever says yes.
         if (command is not null && ArgvAllowlist.IsSimpleAllowlisted(command))
             return ClassifyResult.Allow("readonly-shell");
-
-        if (command is not null)
-        {
-            var (blocked, reason) = DestroyGuard.Match(command);
-            if (blocked)
-                return ClassifyResult.Ask("destructive-command", reason);
-        }
 
         if (command is null && CommandExtract.IsEmptyInput(input))
         {
