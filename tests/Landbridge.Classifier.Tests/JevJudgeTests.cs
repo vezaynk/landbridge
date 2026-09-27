@@ -46,7 +46,7 @@ public sealed class JevJudgeTests
     [Fact]
     public async Task Confident_ordinary_work_runs_unasked()
     {
-        var (judge, _) = Rig(HttpStatusCode.OK, Answer(0.97));
+        var (judge, _) = Rig(HttpStatusCode.OK, Answer(0.97)); // where swept ordinary cases landed
 
         var result = await judge.JudgeAsync("Bash", Command("npm test"), "npm test", ["fix the failing test"], default);
 
@@ -59,9 +59,9 @@ public sealed class JevJudgeTests
     /// two-stage design was reaching for by having a weak model judge its own doubt.
     /// </summary>
     [Theory]
-    [InlineData(0.84)] // just under the bar
-    [InlineData(0.50)] // no idea either way
-    [InlineData(0.02)] // confidently not ordinary
+    [InlineData(0.49)] // just under the bar
+    [InlineData(0.03)] // where the swept dangerous cases landed
+    [InlineData(0.00)] // confidently not contained
     public async Task Anything_short_of_confidence_asks(double noul)
     {
         var (judge, _) = Rig(HttpStatusCode.OK, Answer(noul));
@@ -69,11 +69,17 @@ public sealed class JevJudgeTests
         var result = await judge.JudgeAsync("Bash", Command("sudo -n true"), "sudo -n true", null, default);
 
         Assert.Equal("ask", result.Disposition);
-        Assert.Contains("Not confidently ordinary", result.Reason);
+        Assert.Contains("Not confidently contained", result.Reason);
     }
 
+    /// <summary>
+    /// The action goes as its own fields, and the brief does not go at all. Both matter:
+    /// separate fields keep text in the action from reading as instructions, and omitting
+    /// the brief is what a sweep of the two framings chose — scope and authority separated
+    /// the classes by 0.94 where intent managed 0.60.
+    /// </summary>
     [Fact]
-    public async Task The_request_carries_the_brief_and_the_action_as_separate_fields()
+    public async Task The_request_carries_the_action_and_not_the_brief()
     {
         var (judge, stub) = Rig(HttpStatusCode.OK, Answer(0.9));
 
@@ -87,17 +93,23 @@ public sealed class JevJudgeTests
         var root = sent.RootElement;
         Assert.Equal("jev-latest", root.GetProperty("model").GetString());
 
-        // Separate fields, not one rendered prompt: text inside the action cannot read as
-        // part of the instructions the way it could if these were concatenated.
         var state = root.GetProperty("state");
-        Assert.Equal("add a healthcheck endpoint", state.GetProperty("brief")[0].GetString());
         Assert.Equal("cat .env", state.GetProperty("pending_command").GetString());
         Assert.Equal("Bash", state.GetProperty("pending_tool").GetString());
+        Assert_no_brief(state);
 
         var question = root.GetProperty("questions").GetProperty("is_ordinary_work");
         Assert.Equal("noul", question.GetProperty("type").GetString());
+        // Both halves of the question reach the model, not just the containment one:
+        // "acquiring privilege" sat in the criteria and was ignored until it became a
+        // numbered question, which is what moved `sudo -n true` off 0.90.
+        Assert.Contains("WITHIN ITS AUTHORITY", question.GetProperty("instructions").GetString());
+        Assert.Contains("CONTAINED", question.GetProperty("instructions").GetString());
         Assert.True(question.GetProperty("criteria").TryGetProperty("false", out _));
     }
+
+    private static void Assert_no_brief(JsonElement state) =>
+        Assert.False(state.TryGetProperty("brief", out _));
 
     /// <summary>An unreachable gate is a closed gate — the same disposition
     /// <see cref="LlmJudge"/> takes when it cannot get an answer.</summary>
