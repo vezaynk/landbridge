@@ -39,15 +39,22 @@ public sealed class ClassifyPipelineTests
         Assert.Equal("classifier-fast", r.Via);
     }
 
+    /// <summary>
+    /// A destructive command is the judge's call like any other. Landbridge keeps no
+    /// list of what is dangerous — see the note above the allowlist in ClassifyPipeline.
+    /// </summary>
     [Fact]
-    public async Task Destroy_guard_asks_without_llm()
+    public async Task A_destructive_command_reaches_the_judge()
     {
-        var llm = new RecordingJudge();
+        var llm = new RecordingJudge { Reply = ClassifyResult.Allow("judge-said-so") };
         var r = await Pipeline(llm).ClassifyAsync(
             "Bash", El("""{"command":"git reset --hard"}"""), null, default);
-        Assert.False(llm.Called);
-        Assert.Equal("ask", r.Disposition);
-        Assert.Equal("destructive-command", r.Via);
+
+        // Nothing in landbridge second-guesses it: the judge is asked, and its answer
+        // stands even for a command a denylist would have held.
+        Assert.True(llm.Called);
+        Assert.Equal("allow", r.Disposition);
+        Assert.Equal("judge-said-so", r.Via);
     }
 
     [Fact]
