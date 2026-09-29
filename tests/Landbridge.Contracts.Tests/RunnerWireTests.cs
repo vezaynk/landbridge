@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json.Nodes;
 using Landbridge.Core;
 
@@ -347,6 +348,31 @@ public class RunnerWireTests
         Assert.Equal(TranscriptStreams.DefaultMaxBytes, decoded.MaxBytes);
     }
 
+    /// <summary>
+    /// The same defaults, off an envelope that never carried the fields at all. The
+    /// round-trip above cannot show this: EncodeCommand writes ordinal, stream, offset
+    /// and max_bytes out, so it proves the decoder reads what the encoder wrote rather
+    /// than what a sender may omit. Moved here from Landbridge.Runner.Tests, which was a
+    /// second copy of this file's coverage against the same static class.
+    /// </summary>
+    [Fact]
+    public void Read_transcript_command_defaults_when_the_range_fields_are_absent()
+    {
+        var id = SessionId.New();
+        var json = $$"""
+            { "type": "read-transcript", "session": { "value": "{{id.Value}}" }, "request_id": "req-1" }
+            """;
+
+        var read = Assert.IsType<ReadTranscriptCommand>(RunnerWire.DecodeCommand(json));
+
+        Assert.Equal(id, read.Session);
+        Assert.Equal("req-1", read.RequestId);
+        Assert.Equal(0, read.Ordinal);
+        Assert.Equal(TranscriptStreams.Stdout, read.Stream);
+        Assert.Equal(0, read.Offset);
+        Assert.Equal(TranscriptStreams.DefaultMaxBytes, read.MaxBytes);
+    }
+
     // ── Events ──────────────────────────────────────────────────────────────
 
     [Fact]
@@ -645,19 +671,50 @@ public class RunnerWireTests
     }
 
     /// <summary>
-    /// The frozen §10 lists, spelled out as literals on purpose: adding a member here
-    /// is the tripwire that puts a vocabulary change in front of a reviewer instead of
-    /// letting it ride along in a feature diff.
+    /// The frozen §10 vocabulary, spelled out as literals on purpose: a member added
+    /// here is the tripwire that puts a vocabulary change in front of a reviewer
+    /// instead of letting it ride along in a feature diff.
+    ///
+    /// <para>Read off the constants by reflection rather than off a pair of
+    /// <c>IReadOnlySet</c>s, because those sets were the only thing the old version of
+    /// this test consulted and no decoder ever read them: an author adding a command to
+    /// the encode and decode switches had no reason to touch them, so the tripwire fired
+    /// only by convention. A constant cannot be skipped the same way — the switches name
+    /// it — so this now fails on the change it claims to catch.</para>
+    ///
+    /// <para><c>heartbeat</c>, <c>traceparent</c> and <c>gap</c> are excluded because
+    /// they are not in either closed set: the heartbeat is the runner's periodic
+    /// self-report (§10) and the other two are transport metadata beside <c>type</c>,
+    /// which is what lets them be added without a vocabulary change.</para>
     /// </summary>
     [Fact]
-    public void Vocabulary_sets_are_the_closed_frozen_lists()
+    public void The_vocabulary_constants_are_the_closed_frozen_lists()
     {
+        var outside = new HashSet<string>(StringComparer.Ordinal)
+        {
+            nameof(RunnerWire.Heartbeat), nameof(RunnerWire.TraceParent), nameof(RunnerWire.Gap),
+        };
+
+        var vocabulary = typeof(RunnerWire)
+            .GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy)
+            .Where(f => f is { IsLiteral: true, IsInitOnly: false } && f.FieldType == typeof(string))
+            .Where(f => !outside.Contains(f.Name))
+            .Select(f => (string)f.GetRawConstantValue()!)
+            .ToHashSet(StringComparer.Ordinal);
+
         Assert.Equal(
-            new HashSet<string> { "dispatch", "stop", "kill", "prompt", "open-forward", "close-forward", "read-transcript", "start-process", "stop-process", "write-process" },
-            new HashSet<string>(RunnerWire.Commands));
-        Assert.Equal(
-            new HashSet<string> { "started", "session-started", "alive", "tool-call", "usage-reported", "subagent-spawned", "turn-ended", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk", "process-started", "process-stopped", "process-written" },
-            new HashSet<string>(RunnerWire.Events));
+            new HashSet<string>(StringComparer.Ordinal)
+            {
+                // commands (control plane → runner)
+                "dispatch", "stop", "kill", "prompt", "open-forward", "close-forward",
+                "read-transcript", "start-process", "stop-process", "write-process",
+                // events (runner → control plane)
+                "started", "session-started", "alive", "tool-call", "usage-reported",
+                "subagent-spawned", "turn-ended", "exited", "auth-failed", "forward-opened",
+                "forward-closed", "rebooted", "transcript-chunk", "process-started",
+                "process-stopped", "process-written",
+            },
+            vocabulary);
     }
 
     /// <summary>

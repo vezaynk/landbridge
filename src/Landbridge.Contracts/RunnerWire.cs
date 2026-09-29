@@ -52,27 +52,6 @@ public static class RunnerWire
     /// periodic self-report, carried on the same channel.</summary>
     public const string Heartbeat = "heartbeat";
 
-    /// <summary>The closed outbound (control plane → runner) vocabulary.</summary>
-    public static IReadOnlySet<string> Commands { get; } =
-        new HashSet<string>(StringComparer.Ordinal)
-        {
-            Dispatch, Stop, Kill, Prompt, OpenForward, CloseForward, ReadTranscript, StartProcess,
-            StopProcess, WriteProcess,
-        };
-
-    /// <summary>The closed inbound (runner → control plane) vocabulary.</summary>
-    public static IReadOnlySet<string> Events { get; } =
-        new HashSet<string>(StringComparer.Ordinal)
-        {
-            Started, SessionStarted, Alive, ToolCall, UsageReported, SubagentSpawned, TurnEnded, Exited, AuthFailed,
-            ForwardOpened, ForwardClosed, Rebooted,
-            TranscriptChunk, ProcessStarted, ProcessStopped, ProcessWritten,
-        };
-
-    public static bool IsKnownCommand(string? type) => type is not null && Commands.Contains(type);
-
-    public static bool IsKnownEvent(string? type) => type is not null && Events.Contains(type);
-
     /// <summary>The optional envelope property carrying the W3C traceparent (§1
     /// end-to-end tracing). Transport metadata alongside <c>type</c> — NOT part of
     /// the frozen §10 command vocabulary, and ignored by the concrete-record

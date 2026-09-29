@@ -232,35 +232,9 @@ public class RunnerWireProcessControlTests
         Assert.Equal(ProcessRefusals.StdinNotOpened, decoded.Refusal);
     }
 
-    // ── The vocabulary is closed on both channels (§10) ───────────────────────
-
-    [Fact]
-    public void Process_commands_and_events_are_recognized_on_their_own_channel_only()
-    {
-        foreach (var command in new[] { RunnerWire.StartProcess, RunnerWire.StopProcess, RunnerWire.WriteProcess })
-        {
-            Assert.True(RunnerWire.IsKnownCommand(command));
-            Assert.False(RunnerWire.IsKnownEvent(command));
-        }
-
-        foreach (var evt in new[] { RunnerWire.ProcessStarted, RunnerWire.ProcessStopped, RunnerWire.ProcessWritten })
-        {
-            Assert.True(RunnerWire.IsKnownEvent(evt));
-            Assert.False(RunnerWire.IsKnownCommand(evt));
-        }
-    }
-
-    [Fact]
-    public void Neither_channel_recognizes_an_absent_or_unknown_discriminator()
-    {
-        Assert.False(RunnerWire.IsKnownCommand(null));
-        Assert.False(RunnerWire.IsKnownEvent(null));
-        Assert.False(RunnerWire.IsKnownCommand("frobnicate"));
-        Assert.False(RunnerWire.IsKnownEvent("frobnicate"));
-        // Case matters: the sets compare ordinally, so a near-miss is a miss.
-        Assert.False(RunnerWire.IsKnownCommand("Start-Process"));
-        Assert.False(RunnerWire.IsKnownEvent("Process-Started"));
-    }
+    // The channel-separation and unknown-discriminator claims these once made through
+    // IsKnownCommand/IsKnownEvent are made below through the decoders themselves, which
+    // is where production decides. The predicates asked a pair of sets no decoder read.
 
     [Fact]
     public void A_process_reply_is_not_accepted_as_a_command_and_vice_versa()

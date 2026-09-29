@@ -139,6 +139,48 @@ public sealed class DeadMansSwitchTests : IDisposable
     }
 
     /// <summary>
+    /// The pipe the supervisor holds is the worker's own stdin, proved by closing it and
+    /// requiring the switch to trip.
+    ///
+    /// <para>This exists to keep the test above honest. On its own,
+    /// <see cref="Supervisor_holds_stdin_so_the_harness_does_not_trip_while_landbridged_lives"/>
+    /// is a negative control that would pass for the wrong reason: a supervisor that
+    /// stopped redirecting stdin at all would inherit the test host's stdin, which also
+    /// never reaches EOF, and "no deadman marker appeared" would still hold. Requiring the
+    /// marker when the write end closes is what rules that out.</para>
+    ///
+    /// <para>Moved here from DeadmanSwitchTests, a second file differing only in the case
+    /// of one letter. Its doc comment described a per-profile <c>stdin: closed</c> branch
+    /// that the same commit deleted — both tests there used the same profile, and there
+    /// was no branch to pin.</para>
+    /// </summary>
+    [Fact]
+    public async Task Closing_the_held_pipe_trips_the_switch_so_the_control_above_is_not_vacuous()
+    {
+        var ring = new OutboundEventRing(capacity: 256);
+        var supervisor = new ProcessSupervisor(TestKit.Machine(_workRoot), ring, new FakeTimeProvider());
+        var task = SessionId.New();
+
+        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("run"), "m");
+        Assert.True(supervisor.TryGet(task, out var supervised));
+
+        var started = Path.Combine(_workRoot, task.ToString(), "started");
+        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(started), TimeSpan.FromSeconds(20)));
+
+        // Stand in for landbridged's death.
+        supervised!.Process.StandardInput.Close();
+
+        var deadman = Path.Combine(_workRoot, task.ToString(), "deadman");
+        Assert.True(
+            await TestKit.WaitUntilAsync(() => File.Exists(deadman), TimeSpan.FromSeconds(20)),
+            "the worker did not trip its switch when the held pipe closed");
+        Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(20)));
+        Assert.Equal(TestHarness.Program.DeadManExitCode, supervised.Process.ExitCode);
+
+        supervisor.KillAll();
+    }
+
+    /// <summary>
     /// Linux-only PDEATHSIG (skips here on macOS; runs in CI on ubuntu). The
     /// `middleman-nopipe` rig does NOT hold a pipe on the inner's stdin, so there is
     /// no EOF to trip the portable watch — only <c>prctl(PR_SET_PDEATHSIG, SIGKILL)</c>
