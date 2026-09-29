@@ -219,6 +219,11 @@ While running, `landbridged` serves this machine's id on loopback
 `bind_machine`. The port is well-known and not configurable; bind failure is
 logged (`identity=unbound` on the up line) and is not fatal.
 
+Use the IPv4 literal, not `localhost`. On macOS and Linux `localhost` resolves to
+`::1` first and nothing is listening there — `HttpListener` rejects an `[::1]`
+prefix on those platforms — so `curl localhost:19378` answers with connection
+refused while `curl 127.0.0.1:19378` works.
+
 The access token is short-lived and re-minted at `POST /machine/refresh` —
 proactively at ~50% of its remaining lifetime and reactively on a 401 reconnect.
 The long-lived refresh token is the only durable secret on the box.
