@@ -152,23 +152,94 @@ public class SecretProtectionTests
 
     // ── model wiring ─────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Every string column in the model is classified, and the sealed ones carry a
+    /// converter. The guarantee is structural — encryption is a property of the MODEL, so
+    /// no future write path can bypass it.
+    ///
+    /// <para>Enumerated from <c>db.Model</c> rather than from a hand-written list of the
+    /// three columns that happen to be secret today. The previous version named them one
+    /// by one while its comment promised "if a new retained secret is added without a
+    /// converter, this fails" — which it could not: a new column was invisible to it, and
+    /// would have shipped unencrypted with this test still green.</para>
+    ///
+    /// <para>So a new string column now fails here until someone puts it in one list or
+    /// the other, which is the review step the comment always claimed.</para>
+    /// </summary>
     [Fact]
-    public void Every_retained_secret_column_carries_a_converter()
+    public void Every_string_column_is_classified_and_the_sealed_ones_carry_a_converter()
     {
         using var db = SagaHarness.NewInMemoryDb("meta-model-" + Guid.NewGuid(), SagaHarness.NewProtector());
 
-        // The guarantee is structural: encryption is a property of the MODEL, so no
-        // future write path can bypass it. If a new retained secret is added without a
-        // converter, this fails.
-        AssertSealed(db, typeof(InstanceRow), nameof(InstanceRow.DbPassword));
-        AssertSealed(db, typeof(InstanceRow), nameof(InstanceRow.RelayBearer));
-        AssertSealed(db, typeof(HostRow), nameof(HostRow.TlsClientKeyPem));
+        // Retained secrets: readable back out, so they are sealed at rest.
+        var sealedColumns = new HashSet<string>(StringComparer.Ordinal)
+        {
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.DbPassword)}",
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.RelayBearer)}",
+            $"{nameof(HostRow)}.{nameof(HostRow.TlsClientKeyPem)}",
+        };
 
-        // The passphrase hash is one-way already, and the public certificates are not
-        // secrets — deliberately left unconverted.
-        AssertPlain(db, typeof(InstanceRow), nameof(InstanceRow.PassphraseHash));
-        AssertPlain(db, typeof(HostRow), nameof(HostRow.TlsCaPem));
-        AssertPlain(db, typeof(HostRow), nameof(HostRow.TlsClientCertPem));
+        // Deliberately plain: the passphrase hash is one-way already, the public
+        // certificates are not secrets, and the rest are names, labels and identifiers.
+        var plainColumns = new HashSet<string>(StringComparer.Ordinal)
+        {
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.PassphraseHash)}",
+            $"{nameof(HostRow)}.{nameof(HostRow.TlsCaPem)}",
+            $"{nameof(HostRow)}.{nameof(HostRow.TlsClientCertPem)}",
+
+            // Addresses and names. A host is reached over mutual TLS, so the credential
+            // is TlsClientKeyPem above and the endpoint is only where to send it.
+            $"{nameof(HostRow)}.{nameof(HostRow.EndpointUri)}",
+            $"{nameof(HostRow)}.{nameof(HostRow.Name)}",
+            $"{nameof(HostRow)}.{nameof(HostRow.PublishedHost)}",
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.Name)}",
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.AccountLabel)}",
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.PublicUrl)}",
+
+            // Docker-assigned identifiers for the containers, network and volume this
+            // instance owns. Naming them is how they are found again; none authorises.
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.ImageTag)}",
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.McpContainerId)}",
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.PgContainerId)}",
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.RelayContainerId)}",
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.NetworkName)}",
+            $"{nameof(InstanceRow)}.{nameof(InstanceRow.VolumeName)}",
+
+            // Provisioning step bookkeeping: a failure message and the id of whatever the
+            // step created. Error is operator-facing text and not a designated secret —
+            // keeping a secret out of it is the writer's job, not this column's.
+            $"{nameof(InstanceStepRow)}.{nameof(InstanceStepRow.Error)}",
+            $"{nameof(InstanceStepRow)}.{nameof(InstanceStepRow.ExternalRef)}",
+        };
+
+        var unclassified = new List<string>();
+        foreach (var entity in db.Model.GetEntityTypes())
+        {
+            foreach (var property in entity.GetProperties())
+            {
+                if (property.ClrType != typeof(string))
+                    continue;
+
+                var name = $"{entity.ClrType.Name}.{property.Name}";
+                if (sealedColumns.Contains(name))
+                {
+                    Assert.NotNull(property.GetValueConverter());
+                    continue;
+                }
+                if (plainColumns.Contains(name))
+                {
+                    Assert.Null(property.GetValueConverter());
+                    continue;
+                }
+                unclassified.Add(name);
+            }
+        }
+
+        Assert.True(
+            unclassified.Count == 0,
+            "these string columns are in neither list, so nothing here says whether they "
+            + "hold a secret. Add each to sealedColumns (and give it a converter) or to "
+            + "plainColumns:\n  " + string.Join("\n  ", unclassified.Order(StringComparer.Ordinal)));
     }
 
     [Fact]
