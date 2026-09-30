@@ -1,13 +1,19 @@
-<DashboardDocument Title="Team already has a Lead" ActiveKey="connect">
-<h1>Team already has a Lead</h1>
+<DashboardDocument Title="Could not issue a Lead token" ActiveKey="connect">
+<h1>Could not issue a Lead token</h1>
 <p class="sub">@Reason</p>
-<section>
-    <p>One live owner per Team. Check takeover only if you mean to evict them —
-        their next call is told who did it.</p>
-    <p><a href="/dashboard/connect">← back to Connect</a></p>
-</section>
+@if (ShowTakeoverHint)
+{
+    <section>
+        <p>One live owner per Team. Takeover moves this Team to the new token.
+            A factory that owned only this Team is revoked, and its next call names
+            who took it. A factory that still owns another Team stays live and loses
+            only this one.</p>
+    </section>
+}
+<p><a href="/dashboard/connect">← back to Connect</a></p>
 </DashboardDocument>
 
 @code {
     [Parameter] public string Reason { get; set; } = "";
+    [Parameter] public bool ShowTakeoverHint { get; set; }
 }

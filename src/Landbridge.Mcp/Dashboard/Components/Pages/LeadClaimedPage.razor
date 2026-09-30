@@ -4,8 +4,14 @@
 <section class="secret">
     <label for="token">Lead token</label>
     <input id="token" type="text" class="mono" readonly value="@Token" />
-    <p class="nt">Point the harness at <span class="mono">@McpUrl</span> as
-        <span class="mono">Authorization: Bearer</span>.
+    <p class="nt">Point the harness at <span class="mono">POST @McpUrl</span> (the origin, not <span class="mono">/mcp</span>). For Grok:</p>
+    <pre class="howto">[mcp_servers.landbridge]
+url = "@McpUrl"
+enabled = true
+
+[mcp_servers.landbridge.headers]
+Authorization = "Bearer @Token"</pre>
+    <p class="nt">Then refresh <span class="mono">/mcps</span> (or restart Grok).
         Read <span class="mono">landbridge://skills/lead</span>, then
         <span class="mono">list_profiles</span> before
         <span class="mono">create_session</span> with that

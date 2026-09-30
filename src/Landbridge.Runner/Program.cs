@@ -24,9 +24,10 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        // §5 Bootstrap: `landbridged --enroll --control-url <https://plane>` is a
+        // §5 Bootstrap: `landbridged --enroll --auth-url <https://auth>` is a
         // one-shot mode — exchange the human-issued enrollment token for machine
-        // credentials, persist them (atomic, 0600), print the machine id, and exit.
+        // credentials at the authorization server, persist them (atomic, 0600),
+        // print the machine id, and exit.
         // It never starts the daemon. The token is read from --enroll-token-file or
         // stdin, NEVER argv (§13: an argument lands in shell history and the process
         // list); see RunEnrollAsync.

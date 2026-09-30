@@ -4,15 +4,17 @@
 <section class="secret">
     <label for="token">Token</label>
     <input id="token" type="text" class="mono" readonly value="@Token" />
-    <p class="nt">Expires @ExpiresAt.ToString("u"). Write it to a 0600 file, then:</p>
+    <p class="nt">Expires @ExpiresAt.ToString("u"). Write it to a 0600 file, then exchange it at the authorization server:</p>
     <pre class="howto">landbridged --enroll \
-  --control-url @ControlUrl \
+  --auth-url @AuthUrl \
   --enroll-token-file ./enroll.token \
   --name $(hostname -s) \
   --state-dir /var/lib/landbridged</pre>
-    <p class="nt"><span class="mono">--name</span> is the Machine Group label, not a
-        profile. Use the same <span class="mono">--state-dir</span> when you start
-        the daemon (omit both to use <span class="mono">~/.landbridge</span>).</p>
+    <p class="nt"><span class="mono">--auth-url</span> is where <span class="mono">/enroll</span> lives.
+        <span class="mono">--name</span> is the Machine Group label, not a profile.
+        The exchange answers with the plane's control URL.
+        Use the same <span class="mono">--state-dir</span> when you start the daemon
+        (omit both to use <span class="mono">~/.landbridge</span>).</p>
 </section>
 <p><a href="/dashboard/connect">← back to Connect</a></p>
 </DashboardDocument>
@@ -20,5 +22,5 @@
 @code {
     [Parameter, EditorRequired] public string Token { get; set; } = "";
     [Parameter] public DateTimeOffset ExpiresAt { get; set; }
-    [Parameter, EditorRequired] public string ControlUrl { get; set; } = "";
+    [Parameter, EditorRequired] public string AuthUrl { get; set; } = "";
 }

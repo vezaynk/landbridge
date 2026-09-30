@@ -60,8 +60,15 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
 
         var html = await GetAuthedAsync(app, "/dashboard/connect", ct);
-        Assert.Contains("Connect as a Lead", html, StringComparison.Ordinal);
+        Assert.Contains("Lead token", html, StringComparison.Ordinal);
         Assert.Contains("Enroll a machine", html, StringComparison.Ordinal);
+        Assert.Contains("--auth-url", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("--control-url", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("seed boxes", html, StringComparison.Ordinal);
+        Assert.True(html.IndexOf("/dashboard/connect/claim", StringComparison.Ordinal)
+            < html.IndexOf("[mcp_servers.landbridge]", StringComparison.Ordinal));
+        Assert.True(html.IndexOf("/dashboard/connect/enroll-token", StringComparison.Ordinal)
+            < html.IndexOf("landbridged --enroll", StringComparison.Ordinal));
         Assert.Contains("/dashboard/connect/claim", html, StringComparison.Ordinal);
         Assert.Contains("/dashboard/connect/enroll-token", html, StringComparison.Ordinal);
         Assert.Contains("landbridge://skills/lead", html, StringComparison.Ordinal);
@@ -79,9 +86,7 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("teamId", html, StringComparison.Ordinal);
         Assert.Contains("--state-dir", html, StringComparison.Ordinal);
         Assert.Contains("Machine Group label", html, StringComparison.Ordinal);
-        Assert.Contains("park_session", html, StringComparison.Ordinal);
-        Assert.Contains("stop_session", html, StringComparison.Ordinal);
-        Assert.Contains("health=failed", html, StringComparison.Ordinal);
+        Assert.Contains("owned only this Team", html, StringComparison.Ordinal);
         Assert.DoesNotContain("permission-level", html, StringComparison.Ordinal);
         Assert.DoesNotContain("claim one below", html, StringComparison.Ordinal);
 
@@ -96,6 +101,9 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.True(doc.RootElement.GetProperty("leadTokenIsFactory").GetBoolean());
         Assert.Equal("create_team", doc.RootElement.GetProperty("createTeam").GetString());
         Assert.Equal(15, doc.RootElement.GetProperty("enrollmentTtlMinutes").GetInt32());
+        var authUrl = doc.RootElement.GetProperty("authUrl").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(authUrl));
+        Assert.Equal($"{authUrl}/enroll", doc.RootElement.GetProperty("enroll").GetString());
 
         await app.StopAsync(ct);
     }
@@ -117,6 +125,18 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", lead);
             var res = await client.SendAsync(req, ct);
             Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        }
+
+        using (var req = new HttpRequestMessage(HttpMethod.Get, "/dashboard/connect"))
+        {
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", lead);
+            var res = await client.SendAsync(req, ct);
+            Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+            var html = await res.Content.ReadAsStringAsync(ct);
+            Assert.Contains("This session is a Lead factory", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("form below", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("Issue Lead token", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("Issue enrollment token", html, StringComparison.Ordinal);
         }
 
         using (var req = new HttpRequestMessage(HttpMethod.Post, "/dashboard/connect/enroll-token")
@@ -170,11 +190,19 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         var token = doc.RootElement.GetProperty("token").GetString();
         Assert.StartsWith("lbr_e_", token);
         Assert.True(doc.RootElement.GetProperty("expiresAt").GetDateTimeOffset() > DateTimeOffset.UtcNow);
+        Assert.False(string.IsNullOrWhiteSpace(doc.RootElement.GetProperty("authUrl").GetString()));
 
         await using var db = pg.NewContext();
         var exchanged = await new TokenService(db, TimeProvider.System)
             .ExchangeEnrollmentAsync(token!, new MachineDeclaration("box", "linux"), ct);
         Assert.NotNull(exchanged);
+
+        var htmlRes = await PostFormAsync(app, "/dashboard/connect/enroll-token", new Dictionary<string, string>(), ct);
+        Assert.Equal(HttpStatusCode.OK, htmlRes.StatusCode);
+        var issued = await htmlRes.Content.ReadAsStringAsync(ct);
+        Assert.Contains("--auth-url", issued, StringComparison.Ordinal);
+        Assert.DoesNotContain("--control-url", issued, StringComparison.Ordinal);
+        Assert.DoesNotContain("[mcp_servers.landbridge]", issued, StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }
@@ -205,6 +233,22 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         using var took = JsonDocument.Parse(await takeover.Content.ReadAsStringAsync(ct));
         Assert.StartsWith("lbr_l_", took.RootElement.GetProperty("token").GetString());
         Assert.Equal(teamId, took.RootElement.GetProperty("teamId").GetString());
+
+        var bad = await PostFormAsync(app, "/dashboard/connect/claim",
+            new Dictionary<string, string> { ["teamId"] = "not-a-team" }, ct);
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+        var refused = await bad.Content.ReadAsStringAsync(ct);
+        Assert.Contains("text/html", bad.Content.Headers.ContentType!.ToString(), StringComparison.Ordinal);
+        Assert.Contains("not a team on this plane", refused, StringComparison.Ordinal);
+        Assert.Contains("Could not issue a Lead token", refused, StringComparison.Ordinal);
+        Assert.DoesNotContain("{\"error\"", refused, StringComparison.Ordinal);
+
+        var claimedHtml = await PostFormAsync(app, "/dashboard/connect/claim",
+            new Dictionary<string, string>(), ct);
+        Assert.Equal(HttpStatusCode.OK, claimedHtml.StatusCode);
+        var claimedPage = await claimedHtml.Content.ReadAsStringAsync(ct);
+        Assert.Contains("[mcp_servers.landbridge]", claimedPage, StringComparison.Ordinal);
+        Assert.Contains("Authorization = \"Bearer lbr_l_", claimedPage, StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }
@@ -256,6 +300,21 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         };
         req.Headers.Add("Cookie", $"{DashboardAuth.CookieName}={human}");
         req.Headers.Add("Origin", new Uri(BaseUrl(app)).GetLeftPart(UriPartial.Authority));
+        return await client.SendAsync(req, ct);
+    }
+
+    private async Task<HttpResponseMessage> PostFormAsync(
+        WebApplication app, string path, Dictionary<string, string> fields, CancellationToken ct)
+    {
+        var human = await IssueHumanTokenAsync(ct);
+        using var client = Client(app);
+        using var req = new HttpRequestMessage(HttpMethod.Post, path)
+        {
+            Content = new FormUrlEncodedContent(fields),
+        };
+        req.Headers.Add("Cookie", $"{DashboardAuth.CookieName}={human}");
+        req.Headers.Add("Origin", new Uri(BaseUrl(app)).GetLeftPart(UriPartial.Authority));
+        req.Headers.Accept.ParseAdd("text/html");
         return await client.SendAsync(req, ct);
     }
 

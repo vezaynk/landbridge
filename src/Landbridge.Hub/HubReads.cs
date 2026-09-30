@@ -171,7 +171,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
     {
         var rows = await db.Machines.AsNoTracking()
             .Where(m => !m.Revoked)
-            .OrderBy(m => m.Name)
+            // The rail's three labels, in that order: ready, back-pressure, not ready.
+            .OrderBy(m => m.UnderBackPressure ? 1 : m.Ready ? 0 : 2)
+            .ThenBy(m => m.Slug)
+            .ThenBy(m => m.Id)
             .Take(MaxLimit)
             .ToListAsync(ct);
         return await AttachMachineAsync(rows, includeProcesses: caller.MayProcesses, ct);

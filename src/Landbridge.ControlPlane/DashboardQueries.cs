@@ -149,7 +149,11 @@ public sealed partial class DashboardQueries(
                 row?.Name ?? ""));
         }
 
-        return machines.OrderBy(m => m.MachineId, StringComparer.Ordinal).ToList();
+        return machines
+            .OrderBy(m => m.UnderBackPressure ? 1 : m.Ready ? 0 : 2)
+            .ThenBy(m => m.Slug, StringComparer.Ordinal)
+            .ThenBy(m => m.MachineId, StringComparer.Ordinal)
+            .ToList();
     }
 
     // ── Team view (§12) ───────────────────────────────────────────────────────

@@ -201,7 +201,8 @@ internal static class DashboardCss
       margin-top: 12px; padding: 6px 12px; border: none; border-radius: 6px;
       background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
     }
-    .connect-claim .check { font-weight: 400; display: flex; align-items: center; gap: 8px; }
+    .connect-claim .check { font-weight: 400; display: flex; align-items: flex-start; gap: 8px; line-height: 1.4; }
+    .connect-claim .check input { margin-top: 3px; }
 
     /* ── fleet board (1a lane board) ── */
     a { color: var(--color-accent-400); text-decoration: none; }
@@ -282,14 +283,23 @@ internal static class DashboardCss
     .obs-team__id { font: 400 10.5px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .obs-team__spacer { flex: 1; }
     .obs-team__n { font: 400 10px var(--font-mono); color: var(--color-neutral-600); flex: none; }
-    .obs-machine { display: flex; align-items: center; gap: 8px; padding: 6px 6px; border-radius: var(--radius-sm); }
+    .obs-machine { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 6px 6px; border-radius: var(--radius-sm); }
+    .obs-machine.is-on { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--color-accent-500); }
+    .obs-machine.is-on .obs-machine__id { color: var(--color-neutral-200); }
+    .obs-machine__name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .obs-machine__meta { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 14px; }
     .obs-machine__dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
-    .obs-machine__id { font: 400 10.5px var(--font-mono); color: var(--color-neutral-300); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .obs-machine__id { font: 400 10.5px var(--font-mono); color: var(--color-neutral-300); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
     .obs-machine__spacer { flex: 1; }
     .obs-machine__load { font: 400 10px var(--font-mono); color: var(--color-neutral-600); white-space: nowrap; flex: none; }
-    .obs-machine__revoke { margin: 0; }
+    .obs-machine__act,
+    .obs-machine__revoke {
+      flex: none; width: 6.5ch; margin: 0;
+      font: 400 9px var(--font-mono); text-align: left;
+    }
+    .obs-machine__revoke { display: flex; align-items: center; }
     .obs-machine__revoke button, .obs-machine__act {
-      background: none; border: 0; padding: 0; cursor: pointer;
+      background: none; border: 0; padding: 0; cursor: pointer; line-height: 1;
       font: 400 9px var(--font-mono); color: var(--color-neutral-700);
     }
     .obs-machine__revoke button:hover, .obs-machine__act:hover { color: var(--state-error); }

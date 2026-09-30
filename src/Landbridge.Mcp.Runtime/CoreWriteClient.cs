@@ -34,8 +34,16 @@ public sealed class CoreWriteClient(HttpClient http, ILogger<CoreWriteClient> lo
         if (!string.IsNullOrWhiteSpace(prefer))
             req.Headers.TryAddWithoutValidation("Prefer", prefer);
         using var resp = await http.SendAsync(req, ct);
-        var reply = await resp.Content.ReadFromJsonAsync<CoreStoreReply>(Json, ct)
-            ?? new CoreStoreReply("conflict", Reason: $"core {path} returned {(int)resp.StatusCode} with no body");
+        CoreStoreReply? reply;
+        try
+        {
+            reply = await resp.Content.ReadFromJsonAsync<CoreStoreReply>(Json, ct);
+        }
+        catch (JsonException)
+        {
+            reply = null;
+        }
+        reply ??= new CoreStoreReply("conflict", Reason: $"core {path} returned {(int)resp.StatusCode} with no body");
         if (!resp.IsSuccessStatusCode && reply.Status == "applied")
             reply = reply with { Status = "conflict", Reason = $"core {path} HTTP {(int)resp.StatusCode}" };
         if (!resp.IsSuccessStatusCode)
