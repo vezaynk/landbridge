@@ -50,7 +50,7 @@ else if (Ready)
                                 }
                                 else
                                 {
-                                    <code>@l.Machine</code>
+                                    <code title="@TitleFor(l.Machine!.Value)">@LabelFor(l.Machine)</code>
                                 }
                             </td>
                             <td>
@@ -82,7 +82,7 @@ else if (Ready)
         }
         @foreach (var inv in Inventories)
         {
-            <h3>Machine <code>@inv.Machine</code></h3>
+            <h3>Machine <code title="@TitleFor(inv.Machine)">@LabelFor(inv.Machine)</code></h3>
             @if (inv.Unavailable is { } why)
             {
                 <EmptyState Message="@why" />
@@ -122,6 +122,8 @@ else if (Ready)
     private string? SessionSlug { get; set; }
     private IReadOnlyList<TranscriptLocationView> Locations { get; set; } = [];
     private IReadOnlyList<TranscriptMachineInventory> Inventories { get; set; } = [];
+    private IReadOnlyDictionary<Guid, (string Name, string Slug)> MachineLabels { get; set; } =
+        new Dictionary<Guid, (string Name, string Slug)>();
     protected override bool AutoRefresh => false;
 
     protected override async Task<string?> LoadAsync()
@@ -143,6 +145,8 @@ else if (Ready)
         SessionSlug = HaikuSlug.IsWellFormed(SessionIdText) ? SessionIdText : null;
         var ct = RequestAborted;
         Locations = await Queries.GetTranscriptLocationsAsync(SessionId, ct);
+        MachineLabels = await Queries.MachineLabelsAsync(
+            Locations.Where(l => l.Machine is not null).Select(l => l.Machine!.Value), ct);
         var task = new SessionId(SessionId);
         var inventories = new List<TranscriptMachineInventory>();
         foreach (var machine in Locations
@@ -159,6 +163,20 @@ else if (Ready)
         }
         Inventories = inventories;
         return null;
+    }
+
+    private string LabelFor(Guid? id)
+    {
+        if (id is not { } machine)
+            return "—";
+        MachineLabels.TryGetValue(machine, out var row);
+        return MachineNameLabel(row.Name, row.Slug, machine.ToString("D"));
+    }
+
+    private string TitleFor(Guid id)
+    {
+        MachineLabels.TryGetValue(id, out var row);
+        return MachineNameTitle(row.Slug, id.ToString("D"));
     }
 
     private RenderFragment StreamLink(Guid machine, int ordinal, string stream, long bytes)

@@ -24,7 +24,7 @@ else if (Ready && Run is { } run)
         <p>Declared by @run.MachinesDeclaring.Count machine(s):
             @foreach (var id in run.MachinesDeclaring)
             {
-                <span class="mono">@id</span>
+                <span class="mono" title="@TitleFor(id)">@LabelFor(id)</span>
             }
             .</p>
     }
@@ -59,6 +59,8 @@ else if (Ready && Run is { } run)
 @code {
     [Parameter] public Guid RunId { get; set; }
     private ConformanceRunView? Run { get; set; }
+    private IReadOnlyDictionary<Guid, (string Name, string Slug)> MachineLabels { get; set; } =
+        new Dictionary<Guid, (string Name, string Slug)>();
 
     protected override async Task<string?> LoadAsync()
     {
@@ -87,6 +89,19 @@ else if (Ready && Run is { } run)
                 machines.Add(id);
         }
         Run = ConformanceRunView.From(RunId, profile, tasks, machines);
+        MachineLabels = await Queries.MachineLabelsAsync(machines, RequestAborted);
         return null;
+    }
+
+    private string LabelFor(Guid id)
+    {
+        MachineLabels.TryGetValue(id, out var row);
+        return MachineNameLabel(row.Name, row.Slug, id.ToString("D"));
+    }
+
+    private string TitleFor(Guid id)
+    {
+        MachineLabels.TryGetValue(id, out var row);
+        return MachineNameTitle(row.Slug, id.ToString("D"));
     }
 }

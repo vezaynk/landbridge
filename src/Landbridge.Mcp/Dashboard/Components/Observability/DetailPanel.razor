@@ -7,7 +7,7 @@
             <span class="obs-detail__title-dot" style="background:var(@Meta.ColorVar)"></span>
             <span class="obs-detail__title-ns" title="@Lane.Namespace">@Label(Lane.SessionId, Lane.SessionSlug)</span>
         </div>
-        <div class="obs-detail__meta">@Lane.Profile · @Label(Lane.Machine, Lane.MachineSlug) · @Meta.Label · envelope @Meta.Envelope · team @Label(Lane.TeamId, Lane.TeamSlug)
+        <div class="obs-detail__meta">@Lane.Profile · <span title="@MachineNameTitle(Lane.MachineSlug, Lane.Machine)">@MachineNameLabel(Lane.MachineName, Lane.MachineSlug, Lane.Machine)</span> · @Meta.Label · envelope @Meta.Envelope · team @Label(Lane.TeamId, Lane.TeamSlug)
             · <span class="mono">@Lane.Namespace</span></div>
         <div class="obs-detail__actions">
             <a class="obs-btn obs-btn--primary" href="@TranscriptsHref(Lane.SessionId, Lane.SessionSlug)">Tail transcript</a>
@@ -36,7 +36,7 @@
                 <span class="obs-transcript-head__dot"></span>
             }
             <span class="obs-transcript-head__spacer"></span>
-            <span class="obs-transcript-head__tag">a@(Lane.Attempt) · @Label(Lane.Machine, Lane.MachineSlug)</span>
+            <span class="obs-transcript-head__tag" title="@MachineNameTitle(Lane.MachineSlug, Lane.Machine)">a@(Lane.Attempt) · @MachineNameLabel(Lane.MachineName, Lane.MachineSlug, Lane.Machine)</span>
         </div>
         <div class="obs-transcript">
             @foreach (var l in Lane.Tail)
