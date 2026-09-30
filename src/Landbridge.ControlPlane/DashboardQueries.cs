@@ -439,6 +439,20 @@ public sealed partial class DashboardQueries(
             .ToList();
     }
 
+    /// <summary>Enrollment name and allocated slug for the given machine ids.</summary>
+    public async Task<IReadOnlyDictionary<Guid, (string Name, string Slug)>> MachineLabelsAsync(
+        IEnumerable<Guid> ids, CancellationToken ct = default)
+    {
+        var keys = ids.Distinct().ToArray();
+        if (keys.Length == 0)
+            return new Dictionary<Guid, (string Name, string Slug)>();
+        var rows = await db.Machines.AsNoTracking()
+            .Where(m => keys.Contains(m.Id))
+            .Select(m => new { m.Id, m.Name, m.Slug })
+            .ToListAsync(ct);
+        return rows.ToDictionary(m => m.Id, m => (m.Name, m.Slug));
+    }
+
     /// <summary>
     /// Everything waiting on a person across every Team (§12): open questions
     /// (blocked_on_input) with the typed kind and the worker's own question text,

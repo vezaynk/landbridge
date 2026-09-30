@@ -29,6 +29,18 @@ internal static class DashboardFormat
     public static string Label(string? id, string? slug) =>
         string.IsNullOrEmpty(slug) ? (id ?? "—") : slug;
 
+    /// <summary>Enrollment name, then the allocated slug, then the id.</summary>
+    public static string MachineNameLabel(string? name, string? slug, string? id) =>
+        !string.IsNullOrEmpty(name) ? name
+        : !string.IsNullOrEmpty(slug) ? slug
+        : string.IsNullOrEmpty(id) ? "—" : id;
+
+    /// <summary>The slug and id, for the hover when the name is the label.</summary>
+    public static string MachineNameTitle(string? slug, string? id) =>
+        !string.IsNullOrEmpty(slug)
+            ? string.IsNullOrEmpty(id) ? slug : $"{slug} · {id}"
+            : id ?? "";
+
     public static string TeamHref(Guid id, string? slug) =>
         "/dashboard/teams/" + Address(id, slug);
 

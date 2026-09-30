@@ -3,7 +3,7 @@
     <div class="obs-row__identity">
         <div class="obs-row__names">
             <span class="obs-row__ns" style="color:var(@NameColorVar)" title="@Lane.Namespace">@Label(Lane.SessionId, Lane.SessionSlug)</span>
-            <span class="obs-row__sub">@Sub</span>
+            <span class="obs-row__sub">@(Lane.Profile ?? "unprofiled") · <span title="@MachineNameTitle(Lane.MachineSlug, Lane.Machine)">@MachineNameLabel(Lane.MachineName, Lane.MachineSlug, Lane.Machine)</span> · @Label(Lane.TeamId, Lane.TeamSlug)</span>
         </div>
         <span class="obs-dot">
             @if (Meta.Live)
@@ -48,7 +48,6 @@
     public EventCallback<Guid> OnSelect { get; set; }
 
     private LaneMeta Meta => LaneMeta.Of(Lane, Now);
-    private string Sub => $"{Lane.Profile ?? "unprofiled"} · {Label(Lane.Machine, Lane.MachineSlug)} · {Label(Lane.TeamId, Lane.TeamSlug)}";
     private string NameColorVar => Lane.State == SessionState.Completed ? "--color-neutral-600" : "--color-neutral-200";
     private string NowColorVar => Meta.Label == "lost connection"
         ? "--state-wait"

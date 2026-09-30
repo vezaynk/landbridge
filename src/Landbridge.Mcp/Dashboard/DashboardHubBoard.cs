@@ -77,6 +77,7 @@ internal static class DashboardHubBoard
             .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
 
         var machineSlug = machines.ToDictionary(m => m.Id.ToString("D"), m => m.Slug, StringComparer.Ordinal);
+        var machineName = machines.ToDictionary(m => m.Id.ToString("D"), m => m.Name, StringComparer.Ordinal);
         var heartbeat = machines.Where(m => m.LastSpokeAt is not null)
             .ToDictionary(m => m.Id.ToString("D"), m => m.LastSpokeAt, StringComparer.Ordinal);
 
@@ -150,7 +151,8 @@ internal static class DashboardHubBoard
                 live, beat, LastProgress: null, input, output, cacheRead, cacheWrite, cost, reportedAt,
                 ports, marks, exchange, Tail: [], s.Slug, s.TeamSlug ?? "",
                 machineSlug.GetValueOrDefault(machine) ?? "", sessionPreviews,
-                receiptsByMachine.GetValueOrDefault(machine)));
+                receiptsByMachine.GetValueOrDefault(machine),
+                machineName.GetValueOrDefault(machine) ?? ""));
         }
 
         var obsMachines = machines.Select(m => new ObservabilityMachine(

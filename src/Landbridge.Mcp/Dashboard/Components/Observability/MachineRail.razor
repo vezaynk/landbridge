@@ -32,7 +32,7 @@
             <div class="obs-machine @(IsBoundMachine(m) ? "is-on" : "")">
                 <div class="obs-machine__name">
                     <span class="obs-machine__dot" style="background:@(m.UnderBackPressure ? "var(--state-wait)" : m.Ready ? "var(--state-live)" : "var(--color-neutral-700)")"></span>
-                    <span class="obs-machine__id" title="@(string.IsNullOrEmpty(m.Name) ? m.MachineId : $"{m.Name} · {m.MachineId}")">@Label(m.MachineId, m.Slug)</span>
+                    <span class="obs-machine__id" title="@MachineNameTitle(m.Slug, m.MachineId)">@MachineNameLabel(m.Name, m.Slug, m.MachineId)</span>
                 </div>
                 <div class="obs-machine__meta">
                     <span class="obs-machine__load">@LoadText(m)</span>

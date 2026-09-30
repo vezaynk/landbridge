@@ -70,7 +70,8 @@ public sealed record ObservabilityLane(
     string TeamSlug = "",
     string MachineSlug = "",
     IReadOnlyList<ObservabilityPreview>? Previews = null,
-    IReadOnlyList<ObservabilityReceipt>? Receiving = null);
+    IReadOnlyList<ObservabilityReceipt>? Receiving = null,
+    string MachineName = "");
 
 public sealed record ObservabilityPort(string Name, int Port, bool Live, DateTimeOffset CreatedAt);
 
@@ -275,13 +276,13 @@ public sealed partial class DashboardQueries
             .OfType<Guid>()
             .Distinct()
             .ToArray();
-        var machineSlugs = machineGuidIds.Length == 0
-            ? new Dictionary<string, string>(StringComparer.Ordinal)
+        var machineLabels = machineGuidIds.Length == 0
+            ? new Dictionary<string, (string Slug, string Name)>(StringComparer.Ordinal)
             : (await db.Machines.AsNoTracking()
                 .Where(m => machineGuidIds.Contains(m.Id))
-                .Select(m => new { m.Id, m.Slug })
+                .Select(m => new { m.Id, m.Slug, m.Name })
                 .ToListAsync(ct))
-            .ToDictionary(m => m.Id.ToString(), m => m.Slug, StringComparer.Ordinal);
+            .ToDictionary(m => m.Id.ToString(), m => (m.Slug, m.Name), StringComparer.Ordinal);
 
         var heartbeatByMachine = machineViews
             .Where(m => m.LastHeartbeat is not null)
@@ -361,8 +362,9 @@ public sealed partial class DashboardQueries
                 s.InputAnswer, s.PermissionTool, s.WorkerReport, s.LastRequeueReason, machine,
                 live, beat, progress, input, output, cacheRead, cacheWrite, cost, reportedAt,
                 ports, marks, exchange, tail, s.Slug, teamSlugs.GetValueOrDefault(s.TeamId) ?? "",
-                machineSlugs.GetValueOrDefault(machine) ?? "", previews,
-                receiptsByMachine.GetValueOrDefault(machine)));
+                machineLabels.GetValueOrDefault(machine).Slug ?? "", previews,
+                receiptsByMachine.GetValueOrDefault(machine),
+                machineLabels.GetValueOrDefault(machine).Name ?? ""));
         }
 
         var machines = machineViews
