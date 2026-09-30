@@ -29,25 +29,29 @@
         }
         @foreach (var m in Machines)
         {
-            <div class="obs-machine">
-                <span class="obs-machine__dot" style="background:@(m.UnderBackPressure ? "var(--state-wait)" : m.Ready ? "var(--state-live)" : "var(--color-neutral-700)")"></span>
-                <span class="obs-machine__id" title="@(string.IsNullOrEmpty(m.Name) ? m.MachineId : $"{m.Name} · {m.MachineId}")">@Label(m.MachineId, m.Slug)</span>
-                <span class="obs-machine__spacer"></span>
-                <span class="obs-machine__load">@LoadText(m)</span>
-                @if (IsBoundMachine(m))
-                {
-                    <button type="button" class="obs-machine__act" disabled="@Busy" title="Unbind this box"
-                            @onclick="UnbindAsync">unbind</button>
-                }
-                else
-                {
-                    <button type="button" class="obs-machine__act" disabled="@Busy" title="Bind this box as yours"
-                            @onclick="() => BindAsync(m.MachineId)">bind</button>
-                }
-                <form class="obs-machine__revoke" method="post" action="/dashboard/machines/revoke">
-                    <input type="hidden" name="machineId" value="@m.MachineId" />
-                    <button type="submit" title="Revoke machine">revoke</button>
-                </form>
+            <div class="obs-machine @(IsBoundMachine(m) ? "is-on" : "")">
+                <div class="obs-machine__name">
+                    <span class="obs-machine__dot" style="background:@(m.UnderBackPressure ? "var(--state-wait)" : m.Ready ? "var(--state-live)" : "var(--color-neutral-700)")"></span>
+                    <span class="obs-machine__id" title="@(string.IsNullOrEmpty(m.Name) ? m.MachineId : $"{m.Name} · {m.MachineId}")">@Label(m.MachineId, m.Slug)</span>
+                </div>
+                <div class="obs-machine__meta">
+                    <span class="obs-machine__load">@LoadText(m)</span>
+                    <span class="obs-machine__spacer"></span>
+                    @if (IsBoundMachine(m))
+                    {
+                        <button type="button" class="obs-machine__act" disabled="@Busy" title="Unbind this box"
+                                @onclick="UnbindAsync">unbind</button>
+                    }
+                    else
+                    {
+                        <button type="button" class="obs-machine__act" disabled="@Busy" title="Bind this box as yours"
+                                @onclick="() => BindAsync(m.MachineId)">bind</button>
+                    }
+                    <form class="obs-machine__revoke" method="post" action="/dashboard/machines/revoke">
+                        <input type="hidden" name="machineId" value="@m.MachineId" />
+                        <button type="submit" title="Revoke machine">revoke</button>
+                    </form>
+                </div>
             </div>
         }
     </div>
