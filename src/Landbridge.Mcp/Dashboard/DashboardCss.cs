@@ -201,7 +201,8 @@ internal static class DashboardCss
       margin-top: 12px; padding: 6px 12px; border: none; border-radius: 6px;
       background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
     }
-    .connect-claim .check { font-weight: 400; display: flex; align-items: center; gap: 8px; }
+    .connect-claim .check { font-weight: 400; display: flex; align-items: flex-start; gap: 8px; line-height: 1.4; }
+    .connect-claim .check input { margin-top: 3px; }
 
     /* ── fleet board (1a lane board) ── */
     a { color: var(--color-accent-400); text-decoration: none; }

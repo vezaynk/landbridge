@@ -187,21 +187,22 @@ persistent machine credentials. The token is read from a file or stdin,
 spec §13):
 
 ```bash
-# token in a file (0600):
+# token in a file (0600). --auth-url is the authorization server, not the MCP URL:
 landbridged --enroll \
-  --control-url https://plane.example.com \
+  --auth-url https://auth.example.com \
   --enroll-token-file ./enroll.token \
   --state-dir /var/lib/landbridged \
   --name web-builder-01
 
 # or piped on stdin (no --enroll-token-file):
-landbridged --enroll --control-url https://plane.example.com < enroll.token
+landbridged --enroll --auth-url https://auth.example.com < enroll.token
 ```
 
-This POSTs to `POST /enroll` and persists the machine credentials — access token,
-refresh token, machine id, and the control URL — to `credentials.json` under the
-state dir, written `0600` in a `0700` directory. `--name` defaults to the
-hostname; the OS string is filled automatically.
+This POSTs to `{auth-url}/enroll`. The authorization server mints the machine
+credentials and answers with the plane's control URL. Those are persisted —
+access token, refresh token, machine id, and that control URL — to
+`credentials.json` under the state dir, written `0600` in a `0700` directory.
+`--name` defaults to the hostname; the OS string is filled automatically.
 
 State-dir resolution order: `--state-dir` → `$LANDBRIDGE_STATE_DIR` →
 `$XDG_STATE_HOME/landbridge` → `~/.landbridge`.
@@ -388,7 +389,7 @@ sudo install -o landbridged -g landbridged -m 0640 config.json /etc/landbridged/
 #    will actually read (0600 in a 0700 dir).
 sudo install -d -o landbridged -g landbridged -m 0700 /var/lib/landbridged
 sudo -u landbridged /opt/landbridged/landbridged --enroll \
-     --control-url https://plane.example.com \
+     --auth-url https://auth.example.com \
      --enroll-token-file ./enroll.token \
      --state-dir /var/lib/landbridged
 
@@ -457,7 +458,7 @@ sudo dotnet publish src/Landbridge.Runner -c Release -o /usr/local/libexec/landb
 
 # Enroll first, into the same --state-dir the plist passes.
 /usr/local/libexec/landbridged/landbridged --enroll \
-  --control-url https://plane.example.com \
+  --auth-url https://auth.example.com \
   --enroll-token-file ./enroll.token --state-dir ~/.landbridge
 
 # LaunchAgent (runs as you, dies at logout):
@@ -601,7 +602,7 @@ control-plane validator is active — not the static stub.
 ### Runner (`landbridged`)
 
 Flags: `--config <path>` (required for a normal run), `--machine-id <id>`,
-`--state-dir <dir>`; and for enrollment `--enroll --control-url <url>`
+`--state-dir <dir>`; and for enrollment `--enroll --auth-url <authorization-server url>`
 `[--enroll-token-file <path>]` `[--name <n>]`.
 
 | Env var | Purpose |

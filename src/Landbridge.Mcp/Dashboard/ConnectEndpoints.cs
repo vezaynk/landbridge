@@ -4,6 +4,7 @@ using Landbridge.Core;
 using Landbridge.Mcp.Dashboard.Components.Pages;
 using Landbridge.Web;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using static Landbridge.Mcp.Dashboard.DashboardHosting;
 
 namespace Landbridge.Mcp.Dashboard;
@@ -45,6 +46,22 @@ internal static class ConnectEndpoints
         return DispatchService.DefaultPublicMcpUrl;
     }
 
+    /// <summary>
+    /// Where <c>landbridged --enroll --auth-url</c> exchanges a token.
+    /// The authorization server when this host was told one, otherwise the
+    /// same origin as <see cref="ResolveMcpUrl"/> (a single-host deployment).
+    /// </summary>
+    public static string ResolveAuthUrl(IConfiguration config, HttpContext? http)
+    {
+        var oauth = http?.RequestServices.GetService<OAuthServerConfig>();
+        if (oauth is not null)
+            return oauth.Issuer;
+        var configured = config["Landbridge:AuthUrl"];
+        if (!string.IsNullOrWhiteSpace(configured))
+            return OAuthServerConfig.Normalize(configured);
+        return ResolveMcpUrl(config, http);
+    }
+
     public static object Guide(string mcpUrl, HttpContext? http = null, OAuthServerConfig? oauth = null)
     {
         var plane = http is not null
@@ -59,6 +76,7 @@ internal static class ConnectEndpoints
             protectedResource = oauth?.ResourceMetadataUri ?? $"{mcpUrl}/.well-known/oauth-protected-resource",
             authorizationServer = oauth?.AuthorizationServerMetadataUri
                 ?? $"{issuer}/.well-known/oauth-authorization-server",
+            authUrl = issuer,
             enroll = $"{issuer}/enroll",
             enrollmentTtlMinutes = (int)TokenService.EnrollmentTtl.TotalMinutes,
             leadSkill = "landbridge://skills/lead",
@@ -91,12 +109,12 @@ internal static class ConnectEndpoints
         return await GatedHuman(http, tokens, ct, async _ =>
         {
             var issued = await tokens.IssueEnrollmentTokenAsync(ct);
-            var controlUrl = ResolveMcpUrl(config, http);
+            var authUrl = ResolveAuthUrl(config, http);
             var model = new
             {
                 token = issued.Token,
                 expiresAt = issued.ExpiresAt,
-                controlUrl,
+                authUrl,
             };
             return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
                 ? Results.Json(model, Json, statusCode: StatusCodes.Status201Created)
@@ -104,7 +122,7 @@ internal static class ConnectEndpoints
                 {
                     Token = issued.Token,
                     ExpiresAt = issued.ExpiresAt ?? default,
-                    ControlUrl = controlUrl,
+                    AuthUrl = authUrl,
                 });
         });
     }
@@ -136,8 +154,7 @@ internal static class ConnectEndpoints
                 if (resolved is null && Guid.TryParse(teamIdText, out var parsed))
                     resolved = new TeamId(parsed);
                 if (resolved is null)
-                    return Results.Json(new { error = "invalid team id" }, Json,
-                        statusCode: StatusCodes.Status400BadRequest);
+                    return InvalidTeam(http);
                 team = resolved.Value;
             }
 
@@ -149,7 +166,8 @@ internal static class ConnectEndpoints
             {
                 LeadClaimResult.Refused refused =>
                     RefusedClaim(http,
-                        $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; check takeover to evict them"),
+                        $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; check takeover to move this Team to a new token",
+                        takeoverHint: true),
                 LeadClaimResult.NoHumanSession =>
                     RefusedClaim(http,
                         "issuing a Lead token requires a human session (the operator passphrase door), not a pasted Lead token"),
@@ -186,8 +204,7 @@ internal static class ConnectEndpoints
                 if (resolved is null && Guid.TryParse(teamIdText, out var parsed))
                     resolved = new TeamId(parsed);
                 if (resolved is null)
-                    return Results.Json(new { error = "invalid team id" }, Json,
-                        statusCode: StatusCodes.Status400BadRequest);
+                    return InvalidTeam(http);
                 team = resolved.Value;
             }
 
@@ -198,7 +215,8 @@ internal static class ConnectEndpoints
                 {
                     LeadClaimResult.Refused refused =>
                         RefusedClaim(http,
-                            $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; check takeover to evict them"),
+                            $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; check takeover to move this Team to a new token",
+                            takeoverHint: true),
                     LeadClaimResult.NoHumanSession =>
                         RefusedClaim(http,
                             "issuing a Lead token requires a human session (the operator passphrase door), not a pasted Lead token"),
@@ -320,10 +338,20 @@ internal static class ConnectEndpoints
             string.Equals(form["takeover"].ToString(), "true", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static IResult RefusedClaim(HttpContext http, string reason) =>
+    private static IResult InvalidTeam(HttpContext http)
+    {
+        const string reason = "that team id is not a team on this plane";
+        return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
+            ? Results.Json(new { error = reason }, Json, statusCode: StatusCodes.Status400BadRequest)
+            : RazorPage<LeadClaimRefusedPage>(new { Reason = reason }, StatusCodes.Status400BadRequest);
+    }
+
+    private static IResult RefusedClaim(HttpContext http, string reason, bool takeoverHint = false) =>
         DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
             ? Results.Json(new { error = reason }, Json, statusCode: StatusCodes.Status409Conflict)
-            : RazorPage<LeadClaimRefusedPage>(new { Reason = reason }, StatusCodes.Status409Conflict);
+            : RazorPage<LeadClaimRefusedPage>(
+                new { Reason = reason, ShowTakeoverHint = takeoverHint },
+                StatusCodes.Status409Conflict);
 
     private static async Task<IResult> GatedHuman(
         HttpContext http, TokenService tokens, CancellationToken ct,
