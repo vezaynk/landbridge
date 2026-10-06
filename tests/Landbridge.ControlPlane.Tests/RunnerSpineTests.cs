@@ -271,6 +271,52 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     /// <summary>
+    /// #99: a predecessor still winding down on machine A reports <c>exited</c> for the
+    /// task after the successor is already the current instance on machine B. That exit
+    /// is current on A, so the runner cannot suppress it. The plane drops it, consumes
+    /// any kill-echo expectation recorded on A, and the successor's own exit is still news.
+    /// </summary>
+    [SkippableFact]
+    public async Task Exited_from_another_machine_does_not_requeue_the_successor()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var predecessor = Guid.NewGuid();
+        var successor = Guid.NewGuid();
+        var (id, instance) = await SeedWorkingTaskWithInstanceAsync(clock, team, successor);
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(predecessor, Set("default"), (_, _) => Task.CompletedTask);
+        registry.Register(successor, Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch(successor, id);
+        Assert.True(await registry.SendKillAsync(predecessor, id, TimeSpan.FromMinutes(2), CancellationToken.None));
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()), predecessor, default);
+
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        Assert.Contains(id, registry.SessionsOn(successor));
+        Assert.False(registry.HasCommandedExit(id));
+        await using (var mid = pg.NewContext())
+        {
+            var row = await mid.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+            Assert.Equal(0, row.InfrastructureRequeues);
+            Assert.False((await mid.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
+        }
+
+        await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()), successor, default);
+
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
+        Assert.Empty(registry.SessionsOn(successor));
+        await using var end = pg.NewContext();
+        var failed = await end.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(1, failed.InfrastructureRequeues);
+        Assert.Equal(LivenessLossReason.ProcessExited, failed.LastRequeueReason);
+    }
+
+    /// <summary>
     /// The reboot arrives on a connection that has already re-adopted what committed state
     /// said the machine was running (<see cref="DispatchService.RehydrateMachineAsync"/>),
     /// so that is what the announcement is about and that is what requeues.

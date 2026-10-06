@@ -502,7 +502,27 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock, RunnerOutbox? o
     }
 
     /// <summary>
-    /// The same question as <see cref="ConsumeCommandedExit"/> without consuming the answer:
+    /// The same consume, limited to <paramref name="machineId"/>. A predecessor's exit
+    /// is dropped when the current instance lives elsewhere (#99); the expectation for
+    /// the kill that caused it still has to be consumed on <em>that</em> machine, or the
+    /// session-wide check would later treat the successor's genuine exit as the echo.
+    /// </summary>
+    public bool ConsumeCommandedExit(Guid machineId, SessionId task)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return false;
+        var now = clock.GetUtcNow();
+        lock (conn.Gate)
+        {
+            if (!conn.CommandedExits.TryGetValue(task, out var until))
+                return false;
+            conn.CommandedExits.Remove(task);
+            return now <= until;
+        }
+    }
+
+    /// <summary>
+    /// The same question as <see cref="ConsumeCommandedExit(SessionId)"/> without consuming the answer:
     /// is a kill the plane ordered for <paramref name="task"/> still outstanding?
     ///
     /// <para>Exists because a killed ACP session produces <em>two</em> signals, not one — the

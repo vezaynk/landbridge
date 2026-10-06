@@ -35,10 +35,10 @@ public sealed class RunnerEventSink(
 
     /// <param name="connectedMachine">
     /// The machine this event arrived from, as the runner endpoint authenticated it.
-    /// Only <c>rebooted</c> needs it, and it needs it for two reasons: the id on that
-    /// event is the runner's own description of itself (a <c>string</c> precisely because
-    /// it need not be a machine id at all), and the requeue it triggers has to be scoped
-    /// to the connection that carried it.
+    /// <c>rebooted</c> needs it because the id on that event is the runner's own
+    /// description of itself, and the requeue has to be scoped to the connection that
+    /// carried it. <c>exited</c> needs it to drop a predecessor's death once the current
+    /// instance lives on a different machine (#99).
     /// </param>
     public async Task HandleAsync(
         RunnerEvent evt, Guid? connectedMachine, CancellationToken ct)
@@ -90,7 +90,7 @@ public sealed class RunnerEventSink(
                 break;
 
             case ExitedEvent e:
-                await HandleExitedAsync(e, ct);
+                await HandleExitedAsync(e, connectedMachine, ct);
                 break;
 
             case RebootedEvent r:
@@ -235,17 +235,35 @@ public sealed class RunnerEventSink(
         });
     }
 
-    private async Task HandleExitedAsync(ExitedEvent e, CancellationToken ct)
+    private async Task HandleExitedAsync(ExitedEvent e, Guid? connectedMachine, CancellationToken ct)
     {
+        // #99: the event names the task, not the attempt. A predecessor winding down on
+        // machine A is current *there*, so the runner reports it, while the successor is
+        // already the current instance on machine B. Applying A's exit would requeue B and
+        // spend a second infrastructure requeue on one death. The instance row records
+        // which machine the current attempt was dispatched to; an exit from anywhere else
+        // is the predecessor. A null machine (a caller with no connection in hand) cannot
+        // be told apart, so it keeps the old behavior.
+        if (connectedMachine is { } reporter
+            && await CurrentInstanceIsElsewhereAsync(e.Session, reporter, ct))
+        {
+            // The kill echo, when there is one, was recorded on the machine we killed.
+            // Consume it there. Leaving it would let the session-wide check below treat
+            // the successor's own later exit as that echo.
+            registry.ConsumeCommandedExit(reporter, e.Session);
+            logger.LogInformation(
+                "runner exited for task {Task} from machine {Machine} is a predecessor; the current instance is elsewhere",
+                e.Session, reporter);
+            return;
+        }
+
         // §10, #84: the plane kills the harness of a dispatch it has just requeued, and the
         // runner reports that death like any other. This is that echo, so there is nothing
         // to do — the requeue already happened, with the clock that fired as its reason, and
-        // it already untracked the attempt. Treating it as news would instead requeue
-        // whatever attempt is current by now (the wire names only the task, so the event
-        // cannot say which attempt died) and untrack a successor that is running fine —
-        // taking a second requeue off the §9 check 7 cap and leaving the successor with no
-        // clock over it. Consuming the expectation here is what makes the plane's own kill
-        // safe to send at all; see RunnerConnectionRegistry.SendKillAsync.
+        // it already untracked the attempt. On the same machine the event still cannot say
+        // which attempt died, so the expectation recorded at the kill is what keeps the
+        // echo from requeueing a successor redispatched onto that same socket.
+        // See RunnerConnectionRegistry.SendKillAsync.
         var commanded = registry.ConsumeCommandedExit(e.Session);
         var keepSuccessor = false;
         var failed = false;
@@ -354,6 +372,15 @@ public sealed class RunnerEventSink(
             registry.Untrack(task);
         logger.LogInformation(
             "requeued {Count} task(s) held by machine {Machine}", held.Count, machineId);
+    }
+
+    private async Task<bool> CurrentInstanceIsElsewhereAsync(
+        SessionId session, Guid reporter, CancellationToken ct)
+    {
+        Guid? holder = null;
+        await WithStoreAsync(async store =>
+            holder = await store.CurrentInstanceMachineAsync(session, ct));
+        return holder is { } machine && machine != reporter;
     }
 
     private async Task WithStoreAsync(Func<SessionStore, Task> action)

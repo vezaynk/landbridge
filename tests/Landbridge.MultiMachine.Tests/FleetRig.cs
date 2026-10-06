@@ -237,7 +237,7 @@ internal sealed class FleetRig(
         // ring undrained (its exits carry no signal) — nothing here changes for it.
         if (RealWorkerMode)
         {
-            _pumps.Add(Task.Run(() => PumpSupervisorRingAsync(ring, _pumpCts.Token)));
+            _pumps.Add(Task.Run(() => PumpSupervisorRingAsync(ring, wireId, _pumpCts.Token)));
             if (_pumps.Count == 1)
             {
                 // One heartbeat pump and one permission pump for the whole fleet,
@@ -928,14 +928,14 @@ internal sealed class FleetRig(
     /// <summary>Drains a machine's worker-supervisor ring into the plane sink (real-worker
     /// mode), recording spawn/exit tallies for diagnostics on the way through. Ends when
     /// the pump CTS cancels (disposal). Sink calls that race plane teardown are swallowed.</summary>
-    private async Task PumpSupervisorRingAsync(OutboundEventRing ring, CancellationToken ct)
+    private async Task PumpSupervisorRingAsync(OutboundEventRing ring, Guid machineId, CancellationToken ct)
     {
         try
         {
             await foreach (var item in ring.ReadAllAsync(ct))
             {
                 Observe(item.Event);
-                try { await _sink.HandleAsync(item.Event, ct); }
+                try { await _sink.HandleAsync(item.Event, machineId, ct); }
                 catch (OperationCanceledException) { break; }
                 catch { /* teardown race: plane stopping / scope disposed — best effort */ }
             }

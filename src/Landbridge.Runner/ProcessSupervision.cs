@@ -727,13 +727,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         catch (InvalidOperationException) { exitCode = -1; }
 
         // §11 resume (#102): a superseded instance's death is not the task's. The wire
-        // names only the task (§10, frozen), so an exit reported for one is read as the
-        // death of whatever instance is current — and after a park the current instance
-        // is the freshly resumed successor, which the plane would then requeue and whose
-        // token it would revoke, leaving a live worker holding a 401'd bearer. Nothing is
-        // lost by staying quiet: this instance's own §12 transcript ends where it died,
-        // the plane's event log already holds the park and the redispatch that replaced
-        // it, and the successor's exit is reported normally when it comes.
+        // names only the task (§10, frozen). The plane drops an exit that arrives from a
+        // machine other than the one holding the current instance (#99), which covers a
+        // predecessor still winding down on a different box. It cannot cover this one:
+        // the successor was dispatched onto this same machine, so an exit reported from
+        // here is read as that successor's death, the plane requeues it, and its token
+        // is revoked while the process is still up. Nothing is lost by staying quiet:
+        // this instance's own §12 transcript ends where it died, the plane's event log
+        // already holds the park and the redispatch that replaced it, and the successor's
+        // exit is reported normally when it comes.
         if (supervised.Superseded)
         {
             Interlocked.Increment(ref _supersededExits);
