@@ -28,7 +28,7 @@ public class LifecycleTests
         Assert.Equal(instance, task.CurrentInstance);
         Assert.Equal(1, task.Attempt);
         // The mint carries the dispatching machine (§12): the instance row is the one
-        // durable record of where a dispatch ran, and a terminal task's transcript can
+        // durable record of where a dispatch ran, and that task's transcript can
         // only be found by asking that machine.
         Assert.Contains(new MintWorkerInstanceToken(instance, TestMachineIds.For("machine-a")), Expect.Effects(result));
     }

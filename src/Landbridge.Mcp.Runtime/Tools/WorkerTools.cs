@@ -515,8 +515,8 @@ public sealed record OpenForwardResult(
 /// <summary>What a worker learns from <c>start_process</c> (§10). No port: this is a process
 /// manager, and reachability is §8.2's noun.</summary>
 /// <param name="LogPath">Where the machine captured this run's output. The agent is on that
-/// machine, so it reads its own process's output with ordinary file tools — no serving path and
-/// no redaction question (§16 open question 8).</param>
+/// machine, so it reads its own process's output with ordinary file tools. There is no
+/// serving path — process logs are a separate decision from transcript reads (§16).</param>
 /// <param name="NextStep">What to do now — in particular that starting is not registering, and
 /// that nothing stops this process for you.</param>
 public sealed record StartProcessResult(

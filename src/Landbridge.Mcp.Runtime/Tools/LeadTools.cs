@@ -6,6 +6,7 @@ using Landbridge.Core;
 using Landbridge.Mcp;
 using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
@@ -50,7 +51,8 @@ public sealed class LeadTools(
     IConfiguration config,
     LandbridgeDbContext db,
     TimeProvider clock,
-    SessionEventFanout? inbox = null)
+    SessionEventFanout? inbox = null,
+    TranscriptRelayService? transcripts = null)
 {
     /// <summary>
     /// The live lead principal behind this call — Team and the claiming human (§4).
@@ -655,6 +657,136 @@ public sealed class LeadTools(
         };
     }
 
+    /// <summary>One call, one range. A live tail is the dashboard <c>follow=1</c> stream.</summary>
+    public const int DefaultTranscriptBytes = 16 * 1024;
+
+    [McpServerTool(Name = "read_transcript"),
+     Description("Read one range of a session's captured harness transcript. Verbatim and untrusted: it may " +
+                 "contain credentials or anything the worker read or printed. Do not repeat secrets from it. " +
+                 "Landbridge does not redact. One call returns at most maxBytes. The default offset (-1) is " +
+                 "the tail — the last maxBytes of the stream. Pass offset 0 to start at the beginning, then " +
+                 "pass the returned nextOffset to continue. eof means caught up to what the machine has " +
+                 "written so far; when running is true, call again later to tail. ordinal -1 (default) is " +
+                 "the latest captured instance; ordinal 0 lists instances instead of reading bytes. stream " +
+                 "is stdout or stderr. The session must belong to teamId. Bytes live only on the machine " +
+                 "that ran the dispatch; an offline machine has nothing to read.")]
+    public async Task<TranscriptRead> ReadTranscript(
+        [Description("The session whose transcript to read.")]
+        string sessionId,
+        [Description("The Team that owns this session. From create_team, or a human-supplied id.")]
+        string teamId,
+        CancellationToken ct,
+        [Description("Machine id or slug. Omit to use the newest dispatch that recorded a machine.")]
+        string? machineId = null,
+        [Description("-1 (default) is the latest captured instance. 0 lists instances instead of reading " +
+                     "bytes. A positive number is that instance.")]
+        int ordinal = -1,
+        [Description("stdout or stderr.")]
+        string stream = TranscriptStreams.Stdout,
+        [Description("-1 (default) is the tail: the last maxBytes. 0 starts at the beginning. Otherwise the " +
+                     "byte offset to resume from, usually the previous nextOffset.")]
+        long offset = -1,
+        [Description("Cap on this reply, in bytes. Default 16384. Clamped to 4..262144.")]
+        int maxBytes = DefaultTranscriptBytes)
+    {
+        if (!TranscriptStreams.IsKnown(stream))
+            throw new McpException("stream must be stdout or stderr.");
+        if (ordinal < -1)
+            throw new McpException("ordinal must be -1 (latest), 0 (inventory), or a positive instance number.");
+
+        var lead = await LeadOn(teamId, ct);
+        var id = await ParseSessionIdAsync(sessionId, ct);
+        var row = await db.Sessions.AsNoTracking()
+            .Where(s => s.Id == id.Value)
+            .Select(s => new { s.TeamId, s.State })
+            .FirstOrDefaultAsync(ct);
+        if (row is null || row.TeamId != lead.Team.Value)
+            throw new McpException($"'{sessionId}' is not a session on this team.");
+
+        var machine = await ResolveMachineAsync(id, machineId, ct);
+        var cap = Math.Clamp(maxBytes < 1 ? DefaultTranscriptBytes : maxBytes, 4, TranscriptStreams.DefaultMaxBytes);
+        var running = !row.State.IsTerminal();
+        var sessionSlug = await ids.SessionAsync(id.Value, ct);
+        var machineSlug = await ids.MachineAsync(machine, ct);
+
+        TranscriptResult.Inventory? inventory = null;
+        if (ordinal <= 0 || offset < 0)
+            inventory = await RequireInventoryAsync(id, machine, ct);
+
+        if (ordinal == 0)
+        {
+            return new TranscriptRead(
+                sessionSlug, machineSlug, 0, stream, 0, 0, true, running, "",
+                inventory!.Instances
+                    .Select(i => new TranscriptInstanceSummary(i.Ordinal, i.StdoutBytes, i.StderrBytes))
+                    .ToList());
+        }
+
+        var chosen = ordinal;
+        if (chosen < 0)
+        {
+            if (inventory!.Instances.Count == 0)
+                throw new McpException("this machine captured nothing for this session.");
+            chosen = inventory.Instances.Max(i => i.Ordinal);
+        }
+
+        var start = offset;
+        if (start < 0)
+        {
+            var inst = inventory!.Instances.FirstOrDefault(i => i.Ordinal == chosen);
+            if (inst is null)
+                throw new McpException("that attempt was never captured.");
+            var size = stream == TranscriptStreams.Stderr ? inst.StderrBytes : inst.StdoutBytes;
+            start = Math.Max(0, size - cap);
+        }
+
+        var read = await AskTranscriptAsync(id, machine, chosen, stream, start, cap, ct);
+        return read switch
+        {
+            TranscriptResult.Range range => new TranscriptRead(
+                sessionSlug, machineSlug, chosen, stream, start, range.NextOffset, range.Eof, running, range.Text),
+            TranscriptResult.Unavailable u => throw new McpException(u.Detail),
+            _ => throw new McpException("unexpected transcript reply"),
+        };
+    }
+
+    private async Task<Guid> ResolveMachineAsync(SessionId id, string? machineId, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(machineId))
+        {
+            return await ids.TryMachineAsync(machineId, ct)
+                ?? throw new McpException($"'{machineId}' is not a machine id.");
+        }
+
+        var found = await db.WorkerInstances.AsNoTracking()
+            .Where(w => w.SessionId == id.Value && w.MachineId != null)
+            .OrderByDescending(w => w.CreatedAt)
+            .Select(w => w.MachineId)
+            .FirstOrDefaultAsync(ct);
+        return found ?? throw new McpException(
+            "this session has no recorded machine, so there is no transcript to read.");
+    }
+
+    private async Task<TranscriptResult.Inventory> RequireInventoryAsync(
+        SessionId id, Guid machine, CancellationToken ct) =>
+        await AskTranscriptAsync(id, machine, ordinal: 0, TranscriptStreams.Stdout, offset: 0,
+            TranscriptStreams.DefaultMaxBytes, ct) switch
+        {
+            TranscriptResult.Inventory inv => inv,
+            TranscriptResult.Unavailable u => throw new McpException(u.Detail),
+            _ => throw new McpException("unexpected transcript reply"),
+        };
+
+    private Task<TranscriptResult> AskTranscriptAsync(
+        SessionId task, Guid machine, int ordinal, string stream, long offset, int maxBytes,
+        CancellationToken ct)
+    {
+        var core = http.HttpContext?.RequestServices?.GetService<CoreWriteClient>();
+        var local = transcripts ?? http.HttpContext?.RequestServices?.GetService<TranscriptRelayService>();
+        return TranscriptAccess.ReadAsync(
+            local, core, InboundBearer, task, machine, ordinal, stream, offset, maxBytes, ct);
+    }
+
     private async Task<SessionId> ParseSessionIdAsync(string sessionId, CancellationToken ct) =>
         await ids.TrySessionAsync(sessionId, ct)
         ?? throw new McpException($"'{sessionId}' is not a valid session id.");
@@ -680,3 +812,22 @@ public sealed class LeadTools(
     private static McpException Unauthorized() =>
         new("this tool requires a live Lead token; issue one from your human session (dashboard Connect) first.");
 }
+
+/// <summary>
+/// One <c>read_transcript</c> reply. <see cref="Text"/> is verbatim harness output and may
+/// contain secrets. <see cref="Eof"/> means caught up to the file as it stands.
+/// </summary>
+public sealed record TranscriptRead(
+    string SessionId,
+    string Machine,
+    int Ordinal,
+    string Stream,
+    long Offset,
+    long NextOffset,
+    bool Eof,
+    bool Running,
+    string Text,
+    IReadOnlyList<TranscriptInstanceSummary>? Instances = null);
+
+/// <summary>One captured instance, returned when <c>read_transcript</c> is asked for ordinal 0.</summary>
+public sealed record TranscriptInstanceSummary(int Ordinal, long StdoutBytes, long StderrBytes);

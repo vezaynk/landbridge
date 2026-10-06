@@ -8,29 +8,29 @@ using Microsoft.Extensions.Logging;
 namespace Landbridge.ControlPlane;
 
 /// <summary>
-/// Relays one transcript read from a machine to a human operator (spec §12 serving). The
-/// plane holds no transcript bytes: it asks the machine that ran the dispatch for one
-/// range, hands the reply straight to the caller, and keeps nothing — no cache, no row, no
-/// log of the content.
+/// Relays one transcript read from a machine (spec §12 serving). The plane holds no
+/// transcript bytes: it asks the machine that ran the dispatch for one range, hands the
+/// reply straight to the caller, and keeps nothing — no cache, no row, no log of the content.
 ///
 /// <para><b>Pull, one range in flight.</b> Each call is one command and one reply
 /// (<see cref="TranscriptWaiters"/>), so the caller's own pace is the flow control: it asks
-/// for the next range only once it has written the last to the operator's connection. That
+/// for the next range only once it has written the last to the caller's connection. That
 /// is what keeps a 50 MiB transcript from queueing behind itself on the control socket and
 /// starving heartbeats or a <c>kill</c> (§10 channel separation).</para>
 ///
-/// <para><b>The terminal gate lives here, not in the endpoint.</b> Redaction is
-/// unresolved (§13, §16 open question 8), so transcripts are served verbatim and the
-/// compensating control is scope: only a task that can never run again, and whose worker
-/// instance token is therefore already revoked, is readable. Keeping the check inside the
-/// service means no future caller can forget it — the endpoint decides <em>who</em> is
-/// asking (a human operator, §12), this decides <em>what</em> may be asked for.</para>
+/// <para><b>Verbatim, including while the session is running.</b> Landbridge does not redact
+/// (§13). Harnesses and models are responsible for not printing secrets, so a live session
+/// is readable — its transcript may still contain a live worker token. Who may ask is the
+/// caller's decision (a human on the dashboard, or the Lead that owns the session). This
+/// service only refuses a session that does not exist, or a machine that has said it does
+/// not serve transcripts.</para>
 ///
 /// <para>A singleton alongside <see cref="RunnerConnectionRegistry"/> and
 /// <see cref="TranscriptWaiters"/>, resolving a scoped <see cref="SessionStore"/> per call for
 /// the state read — the <see cref="RunnerEventSink"/> pattern. Which machines ran a task is
 /// a query the caller supplies (<see cref="DashboardQueries"/>); this class only talks to a
-/// machine.</para>
+/// machine. <c>eof</c> on a reply means caught up to the file as it stands, which for a
+/// session that is still writing is not the same as finished.</para>
 /// </summary>
 public sealed class TranscriptRelayService(
     IServiceScopeFactory scopes,
@@ -103,13 +103,6 @@ public sealed class TranscriptRelayService(
                     TranscriptUnavailable.NotServable,
                     $"Machine '{machine}' does not serve transcripts, so this one cannot be read. " +
                     "Transcripts are captured and served by the machine that ran the task.");
-            }
-            if (!state.Value.IsTerminal())
-            {
-                return new TranscriptResult.Unavailable(
-                    TranscriptUnavailable.NotTerminal,
-                    $"This task is {Humanize(state.Value)}. A transcript becomes readable once the task " +
-                    "reaches a terminal state; until then read it on the machine running it.");
             }
         }
 
@@ -191,12 +184,6 @@ public sealed class TranscriptRelayService(
                 TranscriptUnavailable.MachineRefused, $"Machine '{machine}' refused the read: {unknown}."),
         };
 
-    private static string Humanize(SessionState state) => state switch
-    {
-        SessionState.BlockedOnInput => "blocked on input",
-        _ => state.ToString().ToLowerInvariant(),
-    };
-
     private static string NewRequestId() => Guid.NewGuid().ToString("N");
 }
 
@@ -219,15 +206,18 @@ public abstract record TranscriptResult
     public sealed record Unavailable(TranscriptUnavailable Reason, string Detail) : TranscriptResult;
 }
 
-/// <summary>Why a transcript read produced nothing (§12) — each renders differently, because
-/// "the machine is offline" and "this task is still running" are different problems with
-/// different fixes, and neither may present as a hang.</summary>
+/// <summary>Why a transcript read produced nothing (§12). Offline, not servable, busy, and a
+/// machine refusal render differently, and none of them may present as a hang. A session
+/// that is still running is readable.</summary>
 public enum TranscriptUnavailable
 {
     /// <summary>No task with that id.</summary>
     NoSuchSession,
 
-    /// <summary>The task can still run again, so its transcript is not served (§12/§13).</summary>
+    /// <summary>
+    /// Retained so a caller can still name it. Serving no longer refuses a live session:
+    /// a running task's transcript is readable, verbatim (§12).
+    /// </summary>
     NotTerminal,
 
     /// <summary>The machine holding the bytes has no live connection.</summary>

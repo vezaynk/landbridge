@@ -71,6 +71,26 @@ public sealed class CoreWriteClient(HttpClient http, ILogger<CoreWriteClient> lo
             logger.LogWarning("core POST {Path} {Status}", path, (int)resp.StatusCode);
         return parsed;
     }
+
+    /// <summary>
+    /// A façade → Core read. The body is not logged: transcript ranges are verbatim
+    /// harness output and must not land in a log line.
+    /// </summary>
+    public async Task<T?> GetAsync<T>(string path, string bearer, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, path);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        using var resp = await http.SendAsync(req, ct);
+        try
+        {
+            return await resp.Content.ReadFromJsonAsync<T>(Json, ct);
+        }
+        catch (JsonException)
+        {
+            logger.LogWarning("core GET {Path} {Status} was not json", path, (int)resp.StatusCode);
+            return default;
+        }
+    }
 }
 
 public sealed record CoreStoreReply(

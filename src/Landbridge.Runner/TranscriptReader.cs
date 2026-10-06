@@ -10,12 +10,11 @@ namespace Landbridge.Runner;
 /// plane's cursor is the whole conversation, so a landbridged restart mid-read costs the
 /// operator a refresh and nothing else.
 ///
-/// <para><b>Verbatim.</b> The bytes go out exactly as captured. Landbridge does not redact
-/// transcripts — how to do that well is unresolved (§13, §16 open question 8) — so a
-/// transcript may carry credentials the agent echoed, and the compensating controls live
-/// on the plane: a human operator session only, and only for a task in a terminal state,
-/// whose worker instance token is already revoked. This class deliberately contains no
-/// filtering to be mistaken for a boundary.</para>
+/// <para><b>Verbatim.</b> The bytes go out exactly as captured, including while a writer
+/// still holds the file. Landbridge does not redact transcripts (§13). A live session's
+/// file may still contain a worker token; harnesses and models are responsible for not
+/// printing secrets. Who may ask is the plane's decision. This class deliberately contains
+/// no filtering to be mistaken for a boundary.</para>
 ///
 /// <para><b>Flow control is the caller's cursor, not a buffer here.</b> One command, one
 /// reply, at most <see cref="ReadTranscriptCommand.MaxBytes"/> in flight (§10 channel
@@ -77,9 +76,9 @@ public sealed class TranscriptReader(TranscriptStore store)
         try
         {
             // FileShare.ReadWrite is load-bearing: a capture writer may still hold this
-            // file open for append. The plane only serves terminal tasks, but `canceled`
-            // is marked before the harness has finished winding down (§11 stop TTL), so a
-            // live writer is a real case, and Windows enforces share modes.
+            // file open for append. A live session is readable, and `canceled` is marked
+            // before the harness has finished winding down (§11 stop TTL), so a live
+            // writer is the normal case. Windows enforces share modes.
             using var file = new FileStream(
                 path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
 

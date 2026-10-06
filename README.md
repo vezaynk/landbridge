@@ -235,15 +235,18 @@ forward rate limit; the relay
 TCP splice with fail-closed grant validation; **`open_forward`, the Lead-facing
 forward** for reaching a service from your own machine, and the **§8.4 preview
 layer** (wildcard TLS, opaque labels, gated or public); **transcript capture and
-on-demand serving**; **harness telemetry attribution**; **`landbridge-meta`** with
+on-demand serving** (verbatim, including a live dashboard tail and one bounded range
+for the owning Lead); **harness telemetry attribution**; **`landbridge-meta`** with
 encrypted at-rest secrets; and the §12 web dashboard.
 
 Deliberately deferred — do not assume these work:
 
-- **Transcript redaction** (spec §16 open question 8). Transcripts are served
-  **verbatim**, which is why serving is narrowed instead: human operator sessions
-  only, and only for hidden (closed) sessions. This gates live tailing, reading a
-  live session's transcript (whose worker token is still live), and any agent-facing read.
+- **Process-log serving, and transcript redaction as a filter** (spec §16 open question 8).
+  Transcripts are served **verbatim**. A pattern filter catches only shaped secrets and
+  would be easy to mistake for a boundary, so none is applied; harnesses and models are
+  responsible for not printing secrets. Process stdout and stderr stay on the machine:
+  those bytes can carry environment dumps the model did not print, and serving them is
+  a separate decision.
 - **Spend limits.** There are none. The dollar budget ceiling was removed
   2026-08-12 (spec §9's note keeps the design); what bounds a runaway now is time
   (the no-progress ceiling), attempts (the requeue cap), and an operator watching.

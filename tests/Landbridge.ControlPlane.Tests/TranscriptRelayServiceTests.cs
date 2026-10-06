@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
-/// The §12 read path on the plane side: the terminal-state gate, the offline/wedged-machine
+/// The §12 read path on the plane side: a live session is readable, the offline/wedged-machine
 /// answers that must never present as a hang, and relaying one range without keeping a byte
 /// of it. A fake connection stands in for the socket — it answers <c>read-transcript</c>
 /// through the real <see cref="RunnerEventSink"/>, exactly as a real landbridged would.
@@ -25,7 +25,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    // ── The gate (§12/§13: verbatim serving is scoped, not filtered) ───────────
+    // ── Who may be read (§12/§13: verbatim, including a live session) ───────────
 
     [SkippableFact]
     public async Task A_completed_task_is_readable()
@@ -46,23 +46,21 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
     [SkippableTheory]
     [InlineData(SessionState.Submitted)]
     [InlineData(SessionState.Working)]
-    public async Task A_task_that_can_still_run_is_refused(SessionState state)
+    public async Task A_task_that_is_still_running_is_readable(SessionState state)
     {
-        // The compensating control for verbatim serving is scope: only a task that can never
-        // run again is readable (§12/§13, redaction unresolved — §16 open question 8).
-        //
-        // A report does NOT revoke the worker token — close does — so a session that
-        // has mailed a report still carries a LIVE lbr_w_ token in its transcript.
+        // A live session is readable. Its transcript may still hold a worker token;
+        // harnesses and models are responsible for not printing secrets.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var rig = Rig();
         var task = await SeedTaskInStateAsync(rig, state);
-        rig.AnswerWith(_ => throw new InvalidOperationException("the gate must refuse before any command is sent"));
+        rig.AnswerWith(command => new TranscriptChunkEvent(
+            command.Session, command.RequestId, Text: "live bytes\n", NextOffset: 11, Eof: true));
 
         var result = await rig.Relay.ReadAsync(task, Machine, ordinal: 1, TranscriptStreams.Stdout, offset: 0);
 
-        var unavailable = Assert.IsType<TranscriptResult.Unavailable>(result);
-        Assert.Equal(TranscriptUnavailable.NotTerminal, unavailable.Reason);
-        Assert.Empty(rig.Sent); // the gate runs before the machine is even consulted
+        var range = Assert.IsType<TranscriptResult.Range>(result);
+        Assert.Equal("live bytes\n", range.Text);
+        Assert.NotEmpty(rig.Sent);
     }
 
     [SkippableFact]

@@ -3,6 +3,7 @@ using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 
 namespace Landbridge.Mcp.Dashboard;
 
@@ -12,16 +13,16 @@ namespace Landbridge.Mcp.Dashboard;
 /// because its auth rule is deliberately different from every other dashboard route (see
 /// <see cref="RequireHumanAsync"/>), and that difference should be impossible to miss.
 ///
-/// <para><b>Transcripts are served verbatim.</b> Landbridge does not redact them — how to do it
-/// well is unresolved (§13, §16 open question 8) — so the compensating controls are all
-/// here and in <see cref="TranscriptRelayService"/>: a human operator session only, a
-/// terminal task only, a warning the operator cannot miss, and a response the plane never
-/// stores or logs.</para>
+/// <para><b>Transcripts are served verbatim, including while the session is running.</b>
+/// Landbridge does not redact them (§13). Harnesses and models are responsible for not
+/// printing secrets. This page is a human operator session; a Lead reads one bounded range
+/// with <c>read_transcript</c>. The response is never stored or logged.</para>
 ///
 /// <para>The raw stream is served as <c>text/plain</c> and the HTML page only links to it.
 /// Transcript bytes are attacker-influenced content — an agent prints what it reads — so
 /// they are never interpolated into the dashboard's HTML, and no escaping bug can turn a
-/// transcript into script.</para>
+/// transcript into script. <c>follow=1</c> keeps reading past a caught-up end while the
+/// session is still running; without it the response is a snapshot.</para>
 /// </summary>
 public static class DashboardTranscriptEndpoints
 {
@@ -36,6 +37,10 @@ public static class DashboardTranscriptEndpoints
     /// </summary>
     private static readonly TimeSpan StreamDeadline = TimeSpan.FromMinutes(5);
 
+    /// <summary>How long a live tail waits after the file is caught up before asking again.
+    /// The per-machine semaphore is not held across this wait.</summary>
+    private static readonly TimeSpan FollowPoll = TimeSpan.FromSeconds(1);
+
     /// <summary>
     /// The warning that leads every served transcript. In the body, not only in HTML chrome,
     /// so it survives a copy-paste, a <c>curl</c>, or a saved file — the places an operator
@@ -43,9 +48,8 @@ public static class DashboardTranscriptEndpoints
     /// </summary>
     internal const string Warning =
         "[landbridge] Raw harness output, served verbatim. It may contain credentials, customer " +
-        "data, or anything else the agent read or printed. Landbridge does not redact transcripts " +
-        "(spec §13, open question 8). Treat this text as sensitive: do not paste it into a " +
-        "ticket, a chat, or another agent.";
+        "data, or anything else the agent read or printed. Landbridge does not redact transcripts. " +
+        "Treat this text as sensitive.";
 
     public static IEndpointRouteBuilder MapDashboardTranscripts(this IEndpointRouteBuilder app)
     {
@@ -63,11 +67,13 @@ public static class DashboardTranscriptEndpoints
     /// <summary>
     /// The raw stream: follow the machine's cursor, writing each range straight to the
     /// response. Nothing is buffered beyond one range and nothing is persisted (§12).
-    /// The HTML index is the Blazor <c>Transcripts</c> page.
+    /// The HTML index is the Blazor <c>Transcripts</c> page. <c>follow=1</c> keeps asking
+    /// after the file is caught up, until the session is terminal (one confirmation read,
+    /// so a cancel's wind-down is not missed) or the deadline.
     /// </summary>
     private static async Task<IResult> HandleStreamAsync(
         string sessionId, HttpContext http, TokenService tokens, TranscriptRelayService relay,
-        TimeProvider clock, CancellationToken ct)
+        SessionStore store, TimeProvider clock, CancellationToken ct)
     {
         if (await RequireHumanAsync(http, tokens, ct) is { } refusal)
             return refusal;
@@ -90,11 +96,17 @@ public static class DashboardTranscriptEndpoints
             return Results.BadRequest(new { error = "stream must be stdout or stderr" });
 
         var task = new SessionId(id);
+        var core = http.RequestServices.GetService<CoreWriteClient>();
+        var bearer = DashboardAuth.ReadToken(http);
+        var follow = WantsFollow(http.Request);
+
+        Task<TranscriptResult> ReadRange(long off) =>
+            TranscriptAccess.ReadAsync(relay, core, bearer, task, machine, ordinal, stream, off, RangeBytes, ct);
 
         // The first range decides the status code, so it is fetched before any byte of the
         // response is committed: an unreadable transcript must be an HTTP error, not a 200
         // whose body happens to explain a failure.
-        var first = await relay.ReadAsync(task, machine, ordinal, stream, offset: 0, RangeBytes, ct);
+        var first = await ReadRange(0);
         if (first is TranscriptResult.Unavailable unavailable)
             return Unavailable(http, unavailable);
         if (first is not TranscriptResult.Range range)
@@ -114,7 +126,10 @@ public static class DashboardTranscriptEndpoints
         var deadline = clock.GetUtcNow() + StreamDeadline;
         var offset = range.NextOffset;
         var eof = range.Eof;
-        while (!eof && !ct.IsCancellationRequested)
+        // Set once a caught-up read has been confirmed after the session went terminal.
+        // A cancel is marked before wind-down finishes writing, so one eof is not enough.
+        var confirmed = false;
+        while (!ct.IsCancellationRequested)
         {
             if (clock.GetUtcNow() > deadline)
             {
@@ -125,7 +140,33 @@ public static class DashboardTranscriptEndpoints
                 break;
             }
 
-            var next = await relay.ReadAsync(task, machine, ordinal, stream, offset, RangeBytes, ct);
+            if (eof)
+            {
+                if (!follow)
+                    break;
+                var state = await store.GetStateAsync(task, ct);
+                var terminal = state is null || state.Value.IsTerminal();
+                if (terminal)
+                {
+                    if (confirmed)
+                        break;
+                    confirmed = true;
+                }
+                else
+                {
+                    confirmed = false;
+                    try
+                    {
+                        await Task.Delay(FollowPoll, ct);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            var next = await ReadRange(offset);
             if (next is not TranscriptResult.Range more)
             {
                 var detail = next is TranscriptResult.Unavailable u ? u.Detail : "unexpected reply";
@@ -141,11 +182,20 @@ public static class DashboardTranscriptEndpoints
                 await WriteAsync(http, $"\n[landbridge] transcript stream ended early at offset {offset}.\n");
                 break;
             }
+            if (more.NextOffset > offset)
+                confirmed = false;
             offset = more.NextOffset;
             eof = more.Eof;
         }
 
         return Results.Empty;
+    }
+
+    private static bool WantsFollow(HttpRequest request)
+    {
+        var value = request.Query["follow"].ToString();
+        return value.Equals("1", StringComparison.Ordinal)
+            || value.Equals("true", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task WriteAsync(HttpContext http, string text)
@@ -157,15 +207,11 @@ public static class DashboardTranscriptEndpoints
     }
 
     /// <summary>
-    /// The one dashboard route family that refuses a Lead token. Every other §12 view is
-    /// reachable with one, deliberately — §12 requires a structured twin a reattaching Lead
-    /// can consume. But a Lead token lives in an agent's MCP client, and a full transcript is
-    /// unbounded untrusted text carrying every byte the agent read: orders of magnitude past
-    /// the 16 KB cap `report_result` enforces precisely to bound that surface, and
-    /// unredacted. So "human-only" is enforced on the credential here rather than assumed
-    /// from the dashboard gate (§2 principle 3 — enforcement where a model cannot reason past
-    /// it). Extending transcripts to agents is future work and needs the fenced-untrusted
-    /// treatment plus a hard size bound (§12).
+    /// The dashboard HTML and this stream refuse a Lead token. Every other §12 view is
+    /// reachable with one, deliberately. A Lead reads one bounded range with
+    /// <c>read_transcript</c> — this response is a multi-minute tail, which an MCP call
+    /// must not hold. The credential check is here rather than assumed from the dashboard
+    /// gate (§2 principle 3).
     /// </summary>
     private static async Task<IResult?> RequireHumanAsync(
         HttpContext http, TokenService tokens, CancellationToken ct) =>
@@ -182,7 +228,7 @@ public static class DashboardTranscriptEndpoints
         var status = unavailable.Reason switch
         {
             TranscriptUnavailable.NoSuchSession => StatusCodes.Status404NotFound,
-            // Not an error in the task's world — the transcript is simply not readable yet.
+            // Retained. A live session is readable; a caller that still names this is a conflict.
             TranscriptUnavailable.NotTerminal => StatusCodes.Status409Conflict,
             TranscriptUnavailable.Busy => StatusCodes.Status409Conflict,
             TranscriptUnavailable.MachineRefused => StatusCodes.Status404NotFound,

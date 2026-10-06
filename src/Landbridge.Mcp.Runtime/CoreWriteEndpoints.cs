@@ -4,6 +4,7 @@ using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Landbridge.Mcp.Auth;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -48,7 +49,79 @@ public static class CoreWriteEndpoints
         g.MapPost("/previews/patch", PatchPreviewAsync);
         g.MapPost("/friction", RecordFrictionAsync);
         g.MapPost("/machines/revoke", RevokeMachineAsync);
+        g.MapGet("/sessions/{id}/transcript", ReadTranscriptAsync);
         return app;
+    }
+
+    /// <summary>
+    /// One transcript range, served from the process that holds <c>/runner</c>. A human
+    /// operator or the Lead that owns the session. The body is verbatim harness output
+    /// and is not logged. <c>ordinal</c> 0 is the inventory.
+    /// </summary>
+    private static async Task<IResult> ReadTranscriptAsync(
+        string id, HttpContext http, TranscriptRelayService relay, TokenService tokens,
+        FriendlyIds ids, LandbridgeDbContext db, CancellationToken ct)
+    {
+        var session = await ids.TrySessionAsync(id, ct);
+        if (session is null)
+            return Results.Json(new CoreTranscriptReply("unavailable", Reason: nameof(TranscriptUnavailable.NoSuchSession), Detail: "no such session"),
+                CoreWriteClient.Json, statusCode: StatusCodes.Status404NotFound);
+        var row = await db.Sessions.AsNoTracking()
+            .Where(s => s.Id == session.Value.Value)
+            .Select(s => new { s.TeamId, s.State })
+            .FirstOrDefaultAsync(ct);
+        if (row is null)
+            return Results.Json(new CoreTranscriptReply("unavailable", Reason: nameof(TranscriptUnavailable.NoSuchSession), Detail: "no such session"),
+                CoreWriteClient.Json, statusCode: StatusCodes.Status404NotFound);
+
+        if (LandbridgeClaims.AsEvictedLead(http.User) is { } evicted)
+        {
+            return Results.Json(new CoreTranscriptReply(
+                    "unavailable", Reason: "forbidden",
+                    Detail: $"your lead claim on team {evicted.Team.Value:N} was taken over"),
+                CoreWriteClient.Json, statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var principal = LandbridgeClaims.ToPrincipal(http.User);
+        if (principal is Principal.Lead lead)
+        {
+            if (!await tokens.OwnsTeamAsync(lead.CredentialId, new TeamId(row.TeamId), ct))
+            {
+                return Results.Json(new CoreTranscriptReply("unavailable", Reason: nameof(TranscriptUnavailable.NoSuchSession), Detail: "no such session"),
+                    CoreWriteClient.Json, statusCode: StatusCodes.Status404NotFound);
+            }
+        }
+        else if (principal is not Principal.Human)
+        {
+            return Results.Json(new CoreTranscriptReply("unavailable", Reason: "forbidden", Detail: "a human operator or the owning lead may read a transcript"),
+                CoreWriteClient.Json, statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        var machineText = http.Request.Query["machine"].ToString();
+        if (!Guid.TryParse(machineText, out var machine))
+            return Results.Json(new CoreTranscriptReply("unavailable", Reason: "bad-request", Detail: "machine must be a machine id"),
+                CoreWriteClient.Json, statusCode: StatusCodes.Status400BadRequest);
+        if (!int.TryParse(http.Request.Query["ordinal"].ToString(), out var ordinal) || ordinal < 0)
+            return Results.Json(new CoreTranscriptReply("unavailable", Reason: "bad-request", Detail: "ordinal must be zero or a positive instance number"),
+                CoreWriteClient.Json, statusCode: StatusCodes.Status400BadRequest);
+        var stream = http.Request.Query["stream"].ToString() is { Length: > 0 } s ? s : TranscriptStreams.Stdout;
+        if (!TranscriptStreams.IsKnown(stream))
+            return Results.Json(new CoreTranscriptReply("unavailable", Reason: "bad-request", Detail: "stream must be stdout or stderr"),
+                CoreWriteClient.Json, statusCode: StatusCodes.Status400BadRequest);
+        var offset = long.TryParse(http.Request.Query["offset"].ToString(), out var off) && off >= 0 ? off : 0L;
+        var maxBytes = int.TryParse(http.Request.Query["maxBytes"].ToString(), out var cap) && cap > 0
+            ? Math.Clamp(cap, 4, TranscriptStreams.DefaultMaxBytes)
+            : TranscriptStreams.DefaultMaxBytes;
+
+        var result = ordinal == 0
+            ? await relay.ListAsync(session.Value, machine, ct)
+            : await relay.ReadAsync(session.Value, machine, ordinal, stream, offset, maxBytes, ct);
+        var running = !row.State.IsTerminal();
+        var wire = TranscriptAccess.ToWire(result, running);
+        var status = result is TranscriptResult.Unavailable unavailable
+            ? TranscriptAccess.StatusCode(unavailable.Reason)
+            : StatusCodes.Status200OK;
+        return Results.Json(wire, CoreWriteClient.Json, statusCode: status);
     }
 
     private static async Task<IResult> CreateTeamAsync(

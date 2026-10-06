@@ -12,7 +12,7 @@ public abstract record Effect;
 /// The machine this dispatch went to. Carried on the effect because the instance row is
 /// the system's one row per dispatch, and it is the only durable record of <em>where</em> a
 /// dispatch ran: the live registry forgets a task the moment it exits (§10), so by the time
-/// a human wants a terminal task's machine-local transcript (§12) nothing else remembers
+/// a human or the owning Lead wants that machine-local transcript (§12) nothing else remembers
 /// which machine to ask.
 /// </param>
 public sealed record MintWorkerInstanceToken(WorkerInstanceId Instance, Guid Machine) : Effect;

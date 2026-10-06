@@ -19,10 +19,10 @@ namespace Landbridge.Runner;
 /// truncation marker, lazy 0600 creation, and the guarantee that capture never blocks
 /// or kills the process it is recording.</para>
 ///
-/// <para>Reading these bytes back is deliberately <b>not</b> built. §12's read path
-/// gates on a task being terminal, which is the compensating control for serving
-/// unredacted output; a process is never terminal, so serving its log would be the live
-/// tailing that §16 open question 8 defers pending redaction. Capture writes to disk,
+/// <para>Reading these bytes back is deliberately <b>not</b> built. Transcript reads
+/// are served verbatim, including a live session (§12). A process log is a different
+/// argument: it can carry environment dumps and stack traces the model did not print,
+/// and "caught up" is not "finished" for a growing log (§16). Capture writes to disk,
 /// the operator reads the file on the machine, and status reaches the dashboard through
 /// the heartbeat instead.</para>
 /// </summary>

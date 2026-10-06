@@ -237,8 +237,9 @@ public sealed record CloseForwardCommand(SessionId Session, string ForwardId) : 
 /// critical path (§10 channel separation): the plane asks for the next range only
 /// once the reader has taken the last, so at most one chunk is ever in flight and a
 /// heartbeat or a <c>kill</c> waits behind one frame rather than a backlog. The
-/// runner sends the file's bytes and interprets nothing (§2.6, §13) — redaction is
-/// deliberately unresolved, so serving is operator-only and verbatim (§16).</para>
+/// runner sends the file's bytes and interprets nothing (§2.6, §13). Serving is
+/// verbatim, including while the session is running. Who may ask is the plane's
+/// decision (§12).</para>
 /// </summary>
 /// <param name="RequestId">Opaque correlation id; the reply carries it back verbatim.</param>
 /// <param name="Ordinal">The worker-instance ordinal to read, or <c>0</c> to inventory the task.</param>
@@ -339,8 +340,8 @@ public static class ProcessStdin
 
 /// <summary>The reply to <see cref="StartProcessCommand"/> (§10).</summary>
 /// <param name="LogPath">Where this run's output is captured on the machine. The declaring
-/// agent is on that machine, so it reads its own process's output with ordinary file tools —
-/// no serving path, no redaction question (§16 open question 8).</param>
+/// agent is on that machine, so it reads its own process's output with ordinary file tools.
+/// There is no serving path. Process logs are a separate decision from transcript reads (§16).</param>
 public sealed record ProcessStartedEvent(
     SessionId Session,
     string RequestId,
@@ -600,9 +601,9 @@ public sealed record RebootedEvent(DateTimeOffset At) : RunnerEvent;
 /// channel instead, so transcript traffic can never starve a heartbeat or a
 /// <c>kill</c>.</para>
 ///
-/// <para><see cref="Text"/> is <b>verbatim</b> file content — Landbridge does not redact
-/// transcripts (§13, §16 open question 8), which is why the plane serves them only to a
-/// human operator and only for a terminal task.</para>
+/// <para><see cref="Text"/> is <b>verbatim</b> file content. Landbridge does not redact
+/// transcripts (§13). A live session's file may still contain a worker token; harnesses
+/// and models are responsible for not printing secrets.</para>
 /// </summary>
 /// <param name="Text">The range's bytes as UTF-8 text; empty for an inventory, EOF, or refusal.</param>
 /// <param name="NextOffset">Where the next read resumes; may be short of

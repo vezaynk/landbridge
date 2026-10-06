@@ -163,10 +163,10 @@ public static class Program
             channelMode = "console";
         }
 
-        // §12 serving: the same store capture writes to, read side. Always wired — the
-        // gate on who may read a transcript is the plane's (human operator, terminal task
-        // only), not something landbridged second-guesses; a machine that captured nothing
-        // simply answers with an empty inventory.
+        // §12 serving: the same store capture writes to, read side. Always wired — who may
+        // read a transcript is the plane's decision (a human on the dashboard, or the Lead
+        // that owns the session), including while the session is still running. A machine
+        // that captured nothing simply answers with an empty inventory.
         // Loopback identity HTTP: a Lead on this box GETs 127.0.0.1:19378 for the
         // machine id to bind_machine. Failure to bind is not fatal — the daemon
         // still runs; the Lead then uses enroll stdout or the dashboard.
