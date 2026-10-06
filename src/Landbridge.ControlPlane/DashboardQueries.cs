@@ -430,12 +430,25 @@ public sealed partial class DashboardQueries(
             .Select(w => new { w.Id, w.MachineId, w.CreatedAt })
             .ToListAsync(ct);
 
+        // The runner stream lives on Core. A dashboard process has its own empty registry,
+        // so "connected" is also a machine that spoke inside the liveness window — the same
+        // 90s the rest of the board uses. The relay still says offline if the stream is down.
+        var machineIds = instances.Where(w => w.MachineId is not null).Select(w => w.MachineId!.Value).Distinct().ToArray();
+        var cutoff = _clock.GetUtcNow() - WaitTtlSweeper.DefaultMachineLivenessWindow;
+        var spoke = machineIds.Length == 0
+            ? []
+            : await db.Machines.AsNoTracking()
+                .Where(m => machineIds.Contains(m.Id) && m.LastSpokeAt != null && m.LastSpokeAt >= cutoff)
+                .Select(m => m.Id)
+                .ToListAsync(ct);
+        var live = spoke.ToHashSet();
+
         return instances
             .Select(w => new TranscriptLocationView(
                 w.Id,
                 w.MachineId,
                 w.CreatedAt,
-                Connected: w.MachineId is { } m && registry.SnapshotFor(m) is not null))
+                Connected: w.MachineId is { } m && (registry.SnapshotFor(m) is not null || live.Contains(m))))
             .ToList();
     }
 
@@ -1027,8 +1040,9 @@ public sealed record InboxView(
 /// <summary>
 /// One dispatch of a task and the machine whose disk may hold its transcript (§12
 /// serving). <see cref="Machine"/> is null for instance rows predating the column;
-/// <see cref="Connected"/> is a snapshot of right now, since transcripts are readable only
-/// while their machine is connected.
+/// <see cref="Connected"/> is a snapshot of right now: the in-process runner registry, or a
+/// machine that spoke inside the liveness window (the dashboard's registry is empty once
+/// <c>/runner</c> lives on Core).
 /// </summary>
 public sealed record TranscriptLocationView(
     Guid InstanceId, Guid? Machine, DateTimeOffset DispatchedAt, bool Connected);

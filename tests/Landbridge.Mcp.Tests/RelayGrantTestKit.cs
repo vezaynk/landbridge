@@ -160,7 +160,7 @@ internal static class RelayGrantTestKit
     /// </summary>
     public static LeadTools LeadToolsFor(
         LandbridgeDbContext db, TimeProvider clock, RunnerConnectionRegistry registry, IHttpContextAccessor http,
-        SessionEventFanout? inbox = null) =>
+        SessionEventFanout? inbox = null, TranscriptRelayService? transcripts = null) =>
         new(new SessionStore(db, clock),
             registry,
             new LeadMachineBindingService(db, clock),
@@ -172,7 +172,8 @@ internal static class RelayGrantTestKit
             new ConfigurationBuilder().Build(),
             db,
             clock,
-            inbox);
+            inbox,
+            transcripts);
 
 
     // ── Seeding (against the fixture DB, so the plane's own scope sees it) ─────

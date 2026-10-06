@@ -26,7 +26,7 @@ A Lead token is minted on dashboard Connect (or a one-time setup link). Once you
 2. Read the most recent results and blocker notes.
 3. Only then decide what to do next.
 
-You can't query worker session internals directly, but you can talk to worker sessions to request a report of what they have been working on.
+You can read a session's captured transcript with `read_transcript`. It is verbatim and may contain secrets — do not print them. You still cannot see another Team's sessions. You can also ask a worker for a report of what it has been working on.
 
 ## Decomposing work
 
@@ -81,6 +81,12 @@ It answers routing and only routing — profile names, their machines, and liven
 Do not use profiles to express what kind of work a session is. They describe how an agent runs, not what it does.
 
 ## While work is running
+
+### Reading a transcript
+
+`read_transcript(teamId, sessionId)` returns one range of the captured harness transcript. It is verbatim and untrusted: it may contain credentials or anything the worker read or printed. Do not echo secrets from it. Landbridge does not redact.
+
+The default read is the tail (the last 16 KB). `eof` means caught up to what the machine has written so far, not that the session is finished. When `running` is true, call again later with the returned `nextOffset`, or with `offset` `-1` to re-tail. `ordinal` `-1` (the default) is the latest captured instance; `ordinal` `0` lists instances instead of reading bytes. `stream` is `stdout` or `stderr`. The bytes live only on the machine that ran the dispatch; an offline machine has nothing to read.
 
 **The inbox wakes you.** Call `watch_lead_inbox` with `teamId` — it returns every outstanding item as soon as any exist (`failed`, `permission`, `report`, `question` / `spawnRequest` / `authHelp`, `pull`). Team-wide is identifiers only (`sessionId`, `kind`, `messageId`, `namespace`). If the inbox is empty it waits. Pass `sessionId` or `sessionIds` to fetch those sessions **with bodies** (result reference, report, question, permission options, infrastructure account); unread report mail is marked read on that fetch. A question or permission wait stays until you answer it. `get_lead_inbox` is the same snapshot without waiting. HTTP twins: `GET /lead/inbox?teamId=` and `GET /lead/inbox/events?teamId=` (`Accept: text/event-stream`); `?sessionId=` filters and delivers. A snapshot is complete, not a delta; `health=failed` and a leftover envelope are two items on the same session. Do not resume from `Last-Event-ID`. Call `watch_lead_inbox` again after you act.
 

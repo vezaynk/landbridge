@@ -9,12 +9,12 @@ namespace Landbridge.MultiMachine.Tests;
 /// The §12 transcript crown, no fakes on any surface that matters: a real <c>landbridged</c>
 /// supervisor spawns a real process whose stdout is really captured to disk, and the real
 /// plane-side read path pulls it back range by range over the runner-channel seam. Capture,
-/// storage, the terminal gate, the pull protocol, and the relay are all the production code.
+/// storage, a live read, the pull protocol, and the relay are all the production code.
 ///
 /// <para>The assertion is deliberately uncomfortable: a credential-shaped string the worker
-/// printed comes back <b>intact</b>. That is the documented behavior — Landbridge does not redact
-/// transcripts (§13, §16 open question 8) — and pinning it here means a future change that
-/// starts filtering, or one that widens who may read, has to come through this test.</para>
+/// printed comes back <b>intact</b>, including while the session is still awaiting a report.
+/// That is the documented behavior — Landbridge does not redact transcripts (§13) — and
+/// pinning it here means a future change that starts filtering has to come through this test.</para>
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLifetime
@@ -55,15 +55,13 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
 
         var relay = rig.PlaneServices.GetRequiredService<TranscriptRelayService>();
 
-        // While it is still awaiting_report, the gate refuses: report_result does not revoke the
-        // reporting instance's token, so an in-flight transcript can still carry a live
-        // credential (§12/§13).
-        var tooEarly = await relay.ListAsync(task, rig.EnrolledId("A"), ct);
-        Assert.Equal(
-            TranscriptUnavailable.NotTerminal,
-            Assert.IsType<TranscriptResult.Unavailable>(tooEarly).Reason);
+        // While it is still awaiting_report the transcript is already readable. report_result
+        // does not revoke the reporting instance's token, so the file may hold a live credential.
+        var early = Assert.IsType<TranscriptResult.Inventory>(
+            await relay.ListAsync(task, rig.EnrolledId("A"), ct));
+        Assert.True(Assert.Single(early.Instances).StdoutBytes > 0, "stdout should already be on disk");
 
-        // The Lead accepts → completed → readable.
+        // The Lead accepts → completed → still readable.
         await rig.AcceptAsync(task, ct);
         Assert.True(
             await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == SessionState.Completed, Bound),

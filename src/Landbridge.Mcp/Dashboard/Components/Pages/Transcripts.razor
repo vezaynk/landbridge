@@ -9,9 +9,8 @@
     <div class="login-wrap card">
         <h1>Transcripts are a human surface</h1>
         <p class="empty">@reason</p>
-        <p class="sub">A full transcript is unbounded, unredacted, untrusted text carrying
-            everything the agent read — far beyond the bounded worker report a Lead reads with
-            <code>get_lead_inbox</code>. Sign in as an operator to read it.</p>
+        <p class="sub">This page is a human operator session. A Lead reads one bounded range with
+            <code>read_transcript</code>. The bytes are verbatim and may contain secrets.</p>
     </div>
 }
 else if (Ready)
@@ -21,8 +20,8 @@ else if (Ready)
     <section class="metrics">
         <div class="metric">
             <div class="l">Raw harness output, served verbatim. It may contain credentials, customer data, or anything
-                else the agent read or printed. Landbridge does not redact transcripts (§13). Do not paste it
-                into a ticket, a chat, or another agent.</div>
+                else the agent read or printed. Landbridge does not redact transcripts (§13). Treat this text
+                as sensitive.</div>
         </div>
     </section>
 
@@ -129,7 +128,7 @@ else if (Ready)
     protected override async Task<string?> LoadAsync()
     {
         if (Principal is not Principal.Human)
-            return "This session is a Lead credential. Transcripts are served only to a human operator session.";
+            return "This session is a Lead credential. The dashboard transcript is a human operator session. Read one range with read_transcript.";
         var resolved = await Queries.ResolveSessionAsync(SessionIdText, RequestAborted);
         if (resolved.Malformed)
         {
@@ -148,13 +147,16 @@ else if (Ready)
         MachineLabels = await Queries.MachineLabelsAsync(
             Locations.Where(l => l.Machine is not null).Select(l => l.Machine!.Value), ct);
         var task = new SessionId(SessionId);
+        var core = Http.HttpContext?.RequestServices.GetService<CoreWriteClient>();
         var inventories = new List<TranscriptMachineInventory>();
         foreach (var machine in Locations
                      .Where(l => l is { Connected: true, Machine: not null })
                      .Select(l => l.Machine!.Value)
                      .Distinct())
         {
-            inventories.Add(await Relay.ListAsync(task, machine, ct) switch
+            inventories.Add(await TranscriptAccess.ReadAsync(
+                Relay, core, OperatorToken, task, machine, ordinal: 0,
+                TranscriptStreams.Stdout, offset: 0, TranscriptStreams.DefaultMaxBytes, ct) switch
             {
                 TranscriptResult.Inventory inv => new TranscriptMachineInventory(machine, inv.Instances, null),
                 TranscriptResult.Unavailable u => new TranscriptMachineInventory(machine, [], u.Detail),
@@ -181,9 +183,9 @@ else if (Ready)
 
     private RenderFragment StreamLink(Guid machine, int ordinal, string stream, long bytes)
     {
+        var href = $"/dashboard/sessions/{Address(SessionId, SessionSlug)}/transcript?machine={machine:D}&ordinal={ordinal}&stream={stream}&follow=1";
         if (bytes == 0)
-            return @<text>—</text>;
-        var href = $"/dashboard/sessions/{Address(SessionId, SessionSlug)}/transcript?machine={machine:D}&ordinal={ordinal}&stream={stream}";
+            return @<a href="@href">follow</a>;
         return @<a href="@href">@StreamBytes(bytes)</a>;
     }
 }

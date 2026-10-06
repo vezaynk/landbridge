@@ -122,14 +122,7 @@ else if (Ready && Team is { } team)
                             </td>
                             <td>
                                 <a href="@SessionEventsHref(t.SessionId, t.Slug)">events</a>
-                                @if (t.State.IsTerminal())
-                                {
-                                    <text> · </text><a href="@TranscriptsHref(t.SessionId, t.Slug)">transcript</a>
-                                }
-                                else
-                                {
-                                    <span class="nt" title="readable once the task reaches a terminal state (§12)">not yet</span>
-                                }
+                                · <a href="@TranscriptsHref(t.SessionId, t.Slug)">transcript</a>
                             </td>
                         </tr>
                     }

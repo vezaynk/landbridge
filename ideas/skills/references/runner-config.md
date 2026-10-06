@@ -654,21 +654,22 @@ newest file is older than the window. When profiles disagree, the most generous 
 retention story: the control plane stores no transcript bytes and has no retention tier
 of its own (§12), so once the sweep removes a dir the transcript is gone everywhere.
 
-> ⚠️ **Turning capture on means raw agent output becomes readable from the dashboard.**
-> A transcript is served **verbatim** — Landbridge does **not** redact it (spec §13, open
-> question 8) — so it may contain credentials the agent echoed, customer data, internal
-> hostnames, or anything else it read or printed. What limits exposure is scope, not
-> filtering: an operator reads it only through a **human** dashboard session (a Lead
-> token is refused), and only for a task in a **terminal** state, whose worker
-> credential is already revoked. Treat a downloaded transcript as sensitive: do not
-> paste it into a ticket, a chat, or another agent.
+> ⚠️ **Turning capture on means raw agent output becomes readable.**
+> A transcript is served **verbatim** — Landbridge does **not** redact it (spec §13) —
+> so it may contain credentials the agent echoed, customer data, internal hostnames, or
+> anything else it read or printed, including while the session is still running.
+> Harnesses and models are responsible for not printing secrets. A human operator tails
+> it from the dashboard (`follow=1`). The owning Lead reads one bounded range with
+> `read_transcript`. A Lead token on the dashboard page is still refused. Treat the text
+> as sensitive.
 
-**Serving (§12).** With capture on, a human operator can read a terminal task's
-transcript from the dashboard: the control plane asks this machine for one byte range at
-a time over the runner channel (`read-transcript`), and `landbridged` replies with the file's
+**Serving (§12).** With capture on, the control plane asks this machine for one byte range
+at a time over the runner channel (`read-transcript`), and `landbridged` replies with the file's
 bytes. Nothing is cached or stored plane-side, one range is in flight at a time (so a
 large transcript cannot crowd out heartbeats or a `kill`), and a machine that is offline
-simply has no readable transcript until it reconnects.
+simply has no readable transcript until it reconnects. Caught up means the file's current
+length. A live session keeps growing; the dashboard tail asks again, and a Lead calls
+`read_transcript` again with `nextOffset`.
 
 **`format` and `path` are gone.** Both were documented for a never-built
 "tail-and-stream": `format` was an advisory label for the stdout stream's shape and was

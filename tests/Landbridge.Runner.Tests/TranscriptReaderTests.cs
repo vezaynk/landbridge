@@ -127,8 +127,7 @@ public sealed class TranscriptReaderTests : IDisposable
     public void A_single_range_returns_the_whole_stream_verbatim()
     {
         // Verbatim is the product behavior, not an accident: a planted credential comes
-        // back intact, which is exactly why the plane serves this to human operators only
-        // and only for terminal tasks (§13, §16 open question 8).
+        // back intact. The plane does not filter it (§13).
         var task = SessionId.New();
         var writer = Capture(task, ["""{"type":"assistant","text":"token lbr_w_deadbeef"}"""]);
 
