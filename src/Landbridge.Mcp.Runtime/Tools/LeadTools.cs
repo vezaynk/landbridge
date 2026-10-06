@@ -222,17 +222,7 @@ public sealed class LeadTools(
         if (await CorePostAsync($"/core/v1/sessions/{sessionId}/stop",
                 new CoreSessionBody(teamId, TtlSeconds: ttlSeconds), ct) is { } viaCore)
             return viaCore.Describe();
-        var machine = registry.MachineFor(id);
-        var applied = await store.ApplyAsync(id, new Landbridge.Core.StopSession(lead), ct);
-        if (applied is StoreResult.Applied ok
-            && ok.Session.OccupancyObserved == Occupancy.Running
-            && machine is not null)
-        {
-            await registry.SendAsync(
-                machine.Value,
-                new StopCommand(id, ttl, StopDisposition.Preserve, "stop"),
-                ct);
-        }
+        var applied = await SessionStop.ApplyAndSignalAsync(store, registry, id, lead, ttl, ct);
         return Describe(applied);
     }
 

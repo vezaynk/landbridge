@@ -1,3 +1,4 @@
+using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
@@ -97,6 +98,64 @@ public sealed class CommandQueueTests(PostgresFixture pg) : IAsyncLifetime
         var again = await read.ReadWorkerInboxAsync(caller, delivered: false);
         Assert.Empty(again!.Items);
         Assert.Equal(MessageState.Idle, (await check.Sessions.AsNoTracking().SingleAsync(s => s.Id == created.Session.Id.Value)).MessageState);
+    }
+
+    /// <summary>
+    /// A queued stop reaches the instance's machine even when the registry is not
+    /// tracking the session (#127). The drain and the Lead tool share
+    /// <see cref="SessionStop"/>.
+    /// </summary>
+    [SkippableFact]
+    public async Task Drain_stop_signals_the_instance_machine()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var team = TeamId.New();
+        var clock = new FakeTimeProvider();
+        var machine = Guid.NewGuid();
+        await using var setup = pg.NewContext();
+        var store = new SessionStore(setup, clock);
+        var created = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
+            new CreateSession(new LeadClaim(team), team, "brief", "default")));
+        Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
+            new MachineSnapshot(machine, true, false, new HashSet<string> { "default" }),
+            WorkerInstanceId.New()));
+
+        var queue = new CommandQueue(setup, clock);
+        var accepted = await queue.EnqueueAsync(
+            CommandRow.LeadActor, Guid.NewGuid(), team.Value, created.Session.Id.Value,
+            CommandRow.StopSession, new CommandPayload(TtlSeconds: 0), CancellationToken.None);
+
+        var sent = new List<RunnerCommand>();
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(machine, new HashSet<string> { "default" }, (cmd, _) =>
+        {
+            sent.Add(cmd);
+            return Task.CompletedTask;
+        });
+
+        var services = new ServiceCollection();
+        services.AddSingleton<TimeProvider>(clock);
+        services.AddSingleton(LandbridgeDbContext.BuildOptions(pg.ConnectionString));
+        services.AddScoped(sp => new LandbridgeDbContext(sp.GetRequiredService<DbContextOptions<LandbridgeDbContext>>()));
+        services.AddSingleton(registry);
+        services.AddLandbridgeStore();
+        await using var provider = services.BuildServiceProvider();
+        Assert.True(await new CommandDrain(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<CommandDrain>.Instance).DrainOneAsync(CancellationToken.None));
+
+        var stop = Assert.IsType<StopCommand>(Assert.Single(sent));
+        Assert.Equal(created.Session.Id, stop.Session);
+        Assert.Equal(TimeSpan.Zero, stop.Ttl);
+        Assert.Equal(StopDisposition.Preserve, stop.Disposition);
+        Assert.Equal("stop", stop.Reason);
+
+        await using var check = pg.NewContext();
+        var row = await check.Commands.AsNoTracking().SingleAsync(c => c.Id == accepted.Id);
+        Assert.Equal(CommandRow.Applied, row.Status);
+        var session = await check.Sessions.AsNoTracking().SingleAsync(s => s.Id == created.Session.Id.Value);
+        Assert.True(session.Hidden);
+        Assert.Equal(SessionState.Completed, session.State);
     }
 
     /// <summary>

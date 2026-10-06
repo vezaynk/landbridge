@@ -208,15 +208,8 @@ public static class CoreWriteEndpoints
             return accepted;
         var ttl = body.TtlSeconds is null ? TimeSpan.FromMinutes(5)
             : TimeSpan.FromSeconds(Math.Max(0, body.TtlSeconds.Value));
-        var machine = registry.MachineFor(session.Value);
-        var applied = await store.ApplyAsync(session.Value, new StopSession(lead.Claim!), ct);
-        if (applied is StoreResult.Applied ok
-            && ok.Session.OccupancyObserved == Occupancy.Running
-            && machine is not null)
-        {
-            await registry.SendAsync(machine.Value,
-                new StopCommand(session.Value, ttl, StopDisposition.Preserve, "stop"), ct);
-        }
+        var applied = await SessionStop.ApplyAndSignalAsync(
+            store, registry, session.Value, lead.Claim!, ttl, ct);
         return Store(applied);
     }
 

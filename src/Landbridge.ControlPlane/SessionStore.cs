@@ -1185,6 +1185,18 @@ public sealed class SessionStore(
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
+    /// The machine recorded on a worker instance, revoked or not. Null when the row is
+    /// missing or never recorded a machine. <see cref="SessionStop"/> reads this after a
+    /// stop commits: the revoke clears the session's current instance, so
+    /// <see cref="CurrentInstanceMachineAsync"/> would then return null.
+    /// </summary>
+    public Task<Guid?> InstanceMachineAsync(WorkerInstanceId id, CancellationToken ct = default) =>
+        db.WorkerInstances.AsNoTracking()
+            .Where(w => w.Id == id.Value)
+            .Select(w => w.MachineId)
+            .FirstOrDefaultAsync(ct);
+
+    /// <summary>
     /// Live envelope or last-closed envelope, Team-scoped. Task id is
     /// <see cref="SessionRow.MessageId"/> / <see cref="SessionRow.LastMessageId"/>.
     /// </summary>
