@@ -1173,6 +1173,18 @@ public sealed class SessionStore(
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
+    /// The machine the current instance was dispatched to (#99). Null when the session
+    /// has no live instance, or that row never recorded a machine — an <c>exited</c>
+    /// cannot be fenced in either case.
+    /// </summary>
+    public Task<Guid?> CurrentInstanceMachineAsync(SessionId id, CancellationToken ct = default) =>
+        db.WorkerInstances.AsNoTracking()
+            .Where(w => !w.Revoked
+                && db.Sessions.Any(s => s.Id == id.Value && s.CurrentInstanceId == w.Id))
+            .Select(w => w.MachineId)
+            .FirstOrDefaultAsync(ct);
+
+    /// <summary>
     /// Live envelope or last-closed envelope, Team-scoped. Task id is
     /// <see cref="SessionRow.MessageId"/> / <see cref="SessionRow.LastMessageId"/>.
     /// </summary>
