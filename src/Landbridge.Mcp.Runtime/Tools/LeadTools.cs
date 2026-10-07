@@ -397,6 +397,37 @@ public sealed class LeadTools(
         return Describe(await store.AnswerPermissionAsync(lead, id, option.Trim(), message, ct));
     }
 
+    [McpServerTool(Name = "answer_plan"),
+     Description("Approve or deny the plan a worker submitted with submit_plan. The worker is still " +
+                 "running, blocked inside that call, so answer promptly. decision is 'approve' or 'deny'. " +
+                 "Approve may include a note. Deny requires one, so the worker can revise and submit again. " +
+                 "Only an approval is stored. A plan that is still waiting does not replace the approved " +
+                 "plan. The stored text is context for the classifier, not a list of commands to allow: " +
+                 "sudo, secrets, and a host the brief never named still need a permission decision.")]
+    public async Task<string> AnswerPlan(
+        [Description("The session id whose plan is pending.")]
+        string sessionId,
+        [Description("The Team that owns this session.")]
+        string teamId,
+        [Description("'approve' or 'deny'.")]
+        string decision,
+        [Description("What the worker is told. Required on deny. Optional on approve. Capped at 16 KB.")]
+        string? message = null,
+        CancellationToken ct = default)
+    {
+        var lead = await LeadOn(teamId, ct);
+        var id = await ParseSessionIdAsync(sessionId, ct);
+        if (string.IsNullOrWhiteSpace(decision))
+            throw new McpException("decision is required: 'approve' or 'deny'.");
+        if (await QueueWaitAsync(lead.Team.Value, id.Value, CommandRow.AnswerPlan,
+                new CommandPayload(Option: decision.Trim(), Message: message), ct) is { } queued)
+            return queued.Describe();
+        if (await CorePostAsync($"/core/v1/sessions/{sessionId}/plan/answer",
+                new CoreSessionBody(teamId, Option: decision.Trim(), Message: message), ct) is { } viaCore)
+            return viaCore.Describe();
+        return Describe(await store.AnswerPlanAsync(lead, id, decision.Trim(), message, ct));
+    }
+
     [McpServerTool(Name = "answer_permission_requests"),
      Description("Decide several permission requests in one call. Each entry is one session: " +
                  "sessionId, option (an optionId from get_lead_inbox, or 'allow'/'deny'), and message " +
@@ -478,7 +509,7 @@ public sealed class LeadTools(
 
     [McpServerTool(Name = "get_lead_inbox"),
      Description("Read this Team's outstanding inbox items right now: failed, permission, report, " +
-                 "question / spawn_request / auth_help, and pull (worker-owed). Team-wide is identifiers " +
+                 "question / spawn_request / auth_help, plan, and pull (worker-owed). Team-wide is identifiers " +
                  "only. Pass sessionId or sessionIds to fetch one or more sessions WITH BODIES " +
                  "(result reference, report, question, permission options, infrastructure account). " +
                  "That per-session fetch is the pull: unread report mail is marked read. A question or " +

@@ -49,7 +49,7 @@ public static class PermissionPolicy
 
         var n = LastSegment(s);
         return n is "get_inbox" or "watch_inbox" or "get_session"
-            or "report_result" or "request_input"
+            or "report_result" or "request_input" or "submit_plan"
             or "start_process" or "stop_process" or "list_processes" or "write_process"
             or "register_service" or "open_forward" or "open_preview"
             or "open_lead_forward" or "report_friction" or "create_team";

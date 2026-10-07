@@ -167,9 +167,12 @@ public sealed class WorkerTools(
         string? question = null,
         CancellationToken ct = default)
     {
-        if (!Enum.TryParse<InputRequestKind>(kind, ignoreCase: true, out var parsed))
+        if (!Enum.TryParse<InputRequestKind>(kind, ignoreCase: true, out var parsed)
+            || parsed == InputRequestKind.Plan)
             throw new McpException(
-                $"unknown input kind '{kind}'; expected one of: {string.Join(", ", Enum.GetNames<InputRequestKind>())}");
+                parsed == InputRequestKind.Plan
+                    ? "a plan is submit_plan, not request_input"
+                    : $"unknown input kind '{kind}'; expected one of: {string.Join(", ", Enum.GetNames<InputRequestKind>().Where(n => n != nameof(InputRequestKind.Plan)))}");
 
         var caller = Caller;
         if (await QueueWaitAsync(CommandRow.Ask,
@@ -179,6 +182,71 @@ public sealed class WorkerTools(
                 new CoreSessionBody("", Kind: kind, Text: question), ct) is { } viaCore)
             return viaCore.Describe();
         return Describe(await store.ApplyAsync(caller.Session, new RequestInput(caller, parsed, question), ct));
+    }
+
+    [McpServerTool(Name = "submit_plan"),
+     Description("Submit a prose plan for this session and wait until the Lead approves or denies it. " +
+                 "Optional. Describe the work and the commands and tools you expect to run, after you " +
+                 "have seen the repo. The call stays open until the Lead answers: approve may include a " +
+                 "note, deny always includes one so you can revise and submit again. Only an approved " +
+                 "plan is stored. A plan that is still waiting does not replace an approved one. The " +
+                 "stored plan is context for later permission checks. It is not a grant, and it does not " +
+                 "list commands the plane will allow. Capped at 16 KB.")]
+    public async Task<PlanDecision> SubmitPlan(
+        [Description("The plan, in prose: what you intend to do and which commands and tools you expect. " +
+                     "Not a structured allowlist. Capped at 16 KB.")]
+        string plan,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(plan))
+            throw new McpException(
+                "plan is required: describe the work and the commands you expect to run.");
+        var caller = Caller;
+        await OpenPlanAsync(caller, plan, ct);
+        var outcome = await store.AwaitPlanVerdictAsync(
+            caller, PermissionRelay.DefaultPollInterval, TimeProvider.System, ct);
+        if (outcome is null)
+            throw new McpException(
+                "Nobody answered this plan, or the session moved on before a decision. " +
+                "Do not continue as if it were approved. If you cannot proceed, say so in your report.");
+        return new PlanDecision(
+            outcome.Verdict == PlanVerdict.Approve ? "approve" : "deny",
+            outcome.Message);
+    }
+
+    private async Task OpenPlanAsync(WorkerCaller caller, string plan, CancellationToken ct)
+    {
+        if (http.HttpContext?.RequestServices?.GetService<CommandQueue>() is { Enabled: true } queue)
+        {
+            var row = await queue.EnqueueAndWaitAsync(
+                CommandRow.WorkerActor, caller.Session.Value, caller.Team.Value, caller.Session.Value,
+                CommandRow.SubmitPlan, new CommandPayload(Text: plan, InstanceId: caller.Instance.Value), ct);
+            if (row.Status != CommandRow.Applied)
+            {
+                var reply = CoreStoreReply.FromCommand(row);
+                if (reply.Status == "accepted")
+                    throw new McpException(
+                        "the plan was queued but not applied, so the Lead cannot see it yet");
+                reply.Describe();
+            }
+            return;
+        }
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var reply = await core.PostAsync(
+                $"/core/v1/sessions/{caller.Session.Value:D}/plan", bearer,
+                new CoreSessionBody("", Text: plan), ct);
+            if (reply.Status != "applied")
+            {
+                if (reply.Status == "accepted")
+                    throw new McpException(
+                        "the plan was queued but not applied, so the Lead cannot see it yet");
+                reply.Describe();
+            }
+            return;
+        }
+        Describe(await store.SubmitPlanAsync(caller, plan, ct));
     }
 
     [McpServerTool(Name = "start_process"),
@@ -521,6 +589,13 @@ public sealed record OpenForwardResult(
 /// that nothing stops this process for you.</param>
 public sealed record StartProcessResult(
     bool Started, string? LogPath, string? Refusal, string? NextStep);
+
+/// <summary>
+/// What <c>submit_plan</c> returns once the Lead decides. <see cref="Decision"/>
+/// is <c>approve</c> or <c>deny</c>. A deny's <see cref="Message"/> is the note
+/// to revise against. An approve's message is optional.
+/// </summary>
+public sealed record PlanDecision(string Decision, string? Message);
 
 /// <summary>The result of <c>stop_process</c> or <c>write_process</c> (§10).
 /// <see cref="Value"/> is the exit code for a stop, or the bytes accepted for a write.</summary>

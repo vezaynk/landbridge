@@ -125,6 +125,21 @@ public sealed class SessionRow
     public string? InputAnswer { get; set; }
 
     /// <summary>
+    /// The prose plan the Lead approved, or null when none has been approved.
+    /// A waiting revision lives on <see cref="InputQuestion"/> and does not
+    /// replace this. A denial leaves it as it was. The classifier reads it as
+    /// context; the plane never matches a command against it.
+    /// </summary>
+    public string? ApprovedPlan { get; set; }
+
+    /// <summary>
+    /// The decision on the latest plan wait, or null while that wait is open
+    /// and until the first <c>submit_plan</c>. The blocked worker polls this
+    /// the way a permission wait polls <see cref="PermissionVerdict"/>.
+    /// </summary>
+    public PlanVerdict? PlanVerdict { get; set; }
+
+    /// <summary>
     /// The harness tool a pending <see cref="InputRequestKind.Permission"/> request is
     /// asking about (§11 permission bridge) — the tool name the harness relayed, e.g.
     /// <c>Bash</c>. The proposed tool input rides <see cref="InputQuestion"/> beside it, so

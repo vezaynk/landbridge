@@ -190,6 +190,9 @@ public sealed class SessionStore(
         if (IsLivePermissionWait(row))
             return new StoreResult.Rejected(Rule.PermissionVerdictAnswersPermissionRequests,
                 "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+        if (IsLivePlanWait(row))
+            return new StoreResult.Rejected(Rule.PlanVerdictAnswersPlanRequests,
+                "this session is waiting on a plan; answer it with answer_plan");
         if (!IsLeadOwedWait(row))
             return new StoreResult.Rejected(Rule.InvalidSourceState,
                 "this session is not waiting on a response; use send_input_request");
@@ -212,6 +215,9 @@ public sealed class SessionStore(
         if (IsLivePermissionWait(row))
             return new StoreResult.Rejected(Rule.PermissionVerdictAnswersPermissionRequests,
                 "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+        if (IsLivePlanWait(row))
+            return new StoreResult.Rejected(Rule.PlanVerdictAnswersPlanRequests,
+                "this session is waiting on a plan; answer it with answer_plan");
         if (IsLeadOwedWait(row))
             return new StoreResult.Rejected(Rule.InvalidSourceState,
                 "this session is waiting on a response; use send_input_response");
@@ -223,6 +229,9 @@ public sealed class SessionStore(
         || (row.InputKind == InputRequestKind.Permission
             && row.State == SessionState.BlockedOnInput
             && row.PermissionVerdict is null);
+
+    private static bool IsLivePlanWait(SessionRow row) =>
+        row.MessageState == MessageState.AwaitingPlan;
 
     private static bool IsLeadOwedWait(SessionRow row) =>
         row.MessageState is MessageState.AwaitingLead or MessageState.AwaitingReport;
@@ -265,6 +274,8 @@ public sealed class SessionStore(
                 && row.PermissionVerdict is null;
             if (pending == InputRequestKind.Permission && !livePermissionWait)
                 pending = null;
+            if (pending == InputRequestKind.Plan && row.MessageState != MessageState.AwaitingPlan)
+                pending = null;
 
             if (row.MessageState == MessageState.AwaitingReport
                 || (row.State == SessionState.Working && pending is null))
@@ -302,6 +313,86 @@ public sealed class SessionStore(
     /// way. The Team check for a Lead is the engine's (<c>IsLeadOrHuman</c>); a human is
     /// unscoped, exactly as on every other §12 write.</para>
     /// </summary>
+    public async Task<StoreResult> SubmitPlanAsync(
+        WorkerCaller caller, string plan, CancellationToken ct = default) =>
+        await ApplyAsync(caller.Session, new SubmitPlan(caller, plan), ct);
+
+    public async Task<StoreResult> AnswerPlanAsync(
+        Actor actor, SessionId id, PlanVerdict verdict, string? message = null,
+        CancellationToken ct = default)
+    {
+        var row = await db.Sessions.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {id}");
+        return await RunTransition(row, new AnswerPlan(actor, verdict, message), ct);
+    }
+
+    public async Task<StoreResult> AnswerPlanAsync(
+        Actor actor, SessionId id, string decision, string? message = null,
+        CancellationToken ct = default)
+    {
+        if (!Enum.TryParse<PlanVerdict>(decision, ignoreCase: true, out var verdict))
+            return new StoreResult.Rejected(Rule.PlanVerdictAnswersPlanRequests,
+                $"unknown decision '{decision}'; expected 'approve' or 'deny'");
+        return await AnswerPlanAsync(actor, id, verdict, message, ct);
+    }
+
+    /// <summary>
+    /// The approved plan, if the Lead has approved one. Empty and missing are
+    /// both "no plan": classify then omits the field.
+    /// </summary>
+    public async Task<string?> GetApprovedPlanAsync(SessionId id, CancellationToken ct = default)
+    {
+        var plan = await db.Sessions.AsNoTracking()
+            .Where(t => t.Id == id.Value)
+            .Select(t => t.ApprovedPlan)
+            .FirstOrDefaultAsync(ct);
+        return string.IsNullOrWhiteSpace(plan) ? null : plan;
+    }
+
+    /// <summary>
+    /// Block until the Lead decides the plan this caller just submitted.
+    /// Null when the row is gone, the caller is no longer incumbent, or the
+    /// wait ended without a decision.
+    /// </summary>
+    public async Task<PlanOutcome?> AwaitPlanVerdictAsync(
+        WorkerCaller caller, TimeSpan pollInterval, TimeProvider clock, CancellationToken ct = default)
+    {
+        while (true)
+        {
+            var seen = await db.Sessions.AsNoTracking()
+                .Where(t => t.Id == caller.Session.Value)
+                .Select(t => new
+                {
+                    t.MessageState,
+                    t.CurrentInstanceId,
+                    t.InputKind,
+                    t.PlanVerdict,
+                })
+                .FirstOrDefaultAsync(ct);
+
+            if (seen is null || seen.CurrentInstanceId != caller.Instance.Value)
+                return null;
+
+            if (seen.PlanVerdict is { } verdict
+                && seen.InputKind == InputRequestKind.Plan
+                && seen.MessageState != MessageState.AwaitingPlan)
+            {
+                var message = await db.SessionEvents.AsNoTracking()
+                    .Where(e => e.SessionId == caller.Session.Value && e.Kind == nameof(AnswerPlan))
+                    .OrderByDescending(e => e.Seq)
+                    .Select(e => e.Detail)
+                    .FirstOrDefaultAsync(ct);
+                return new PlanOutcome(verdict, string.IsNullOrWhiteSpace(message) ? null : message);
+            }
+
+            if (seen.MessageState != MessageState.AwaitingPlan)
+                return null;
+
+            await Task.Delay(pollInterval, clock, ct);
+        }
+    }
+
     public async Task<StoreResult> AnswerPermissionAsync(
         Actor actor, SessionId id, PermissionVerdict verdict, string? message = null,
         CancellationToken ct = default)
@@ -969,6 +1060,7 @@ public sealed class SessionStore(
                 || t.ReportUnread
                 || t.MessageState == MessageState.AwaitingLead
                 || t.MessageState == MessageState.AwaitingPermission
+                || t.MessageState == MessageState.AwaitingPlan
                 || t.MessageState == MessageState.AwaitingReport
                 || t.MessageState == MessageState.AwaitingPull)
             .Select(t => new
@@ -1053,6 +1145,11 @@ public sealed class SessionStore(
                 EscalationReason = (string?)row.PermissionEscalationReason,
                 InputKind = nameof(InputRequestKind.Permission),
             },
+            LeadInboxKind.Plan => item with
+            {
+                Question = (string?)row.InputQuestion,
+                InputKind = nameof(InputRequestKind.Plan),
+            },
             LeadInboxKind.Pull => item,
             _ => item with
             {
@@ -1132,7 +1229,7 @@ public sealed class SessionStore(
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
-    /// True when the Lead (or a live permission wait) is the bottleneck, so
+    /// True when the Lead (or a live permission or plan wait) is the bottleneck, so
     /// no-progress must not treat the worker as wedged. <c>awaiting_pull</c> is
     /// the worker's move and is not skipped. Unread report mail is not a wait —
     /// the worker may keep working, so the progress clock still runs.
@@ -1143,6 +1240,7 @@ public sealed class SessionStore(
                 && (t.MessageState == MessageState.AwaitingLead
                     || t.MessageState == MessageState.AwaitingReport
                     || t.MessageState == MessageState.AwaitingPermission
+                    || t.MessageState == MessageState.AwaitingPlan
                     || (t.InputKind == InputRequestKind.Permission
                         && t.PermissionVerdict == PermissionVerdict.Deny)), ct);
 
@@ -1544,6 +1642,17 @@ public sealed class SessionStore(
             row.PermissionEscalatedAt = null;
             row.PermissionEscalationReason = null;
         }
+        else if (command is SubmitPlan submitted)
+        {
+            row.BlockedAt = clock.GetUtcNow();
+            inputKind = InputRequestKind.Plan;
+            row.InputKind = InputRequestKind.Plan;
+            row.InputQuestion = submitted.Plan;
+            // The approved plan stays. This revision replaces it only if the
+            // Lead approves. A stale plan verdict would let the waiter read
+            // the previous decision, so that one is cleared.
+            row.PlanVerdict = null;
+        }
         else if (command is not EscalatePermission and not ObserveOccupancy)
             // Leave BlockedAt only for a still-open wait: a new RequestInput
             // (stamped above) or an escalation (same permission request, still
@@ -1557,7 +1666,13 @@ public sealed class SessionStore(
         // pure record. The verdict is what the still-blocked worker's tool call is polling
         // for, so it and its message commit in the same transaction as the transition —
         // there is no window where the task is working but the verdict has not landed.
-        if (command is AnswerPermission decided)
+        if (command is AnswerPlan decidedPlan)
+        {
+            row.PlanVerdict = decidedPlan.Verdict;
+            if (decidedPlan.Verdict == PlanVerdict.Approve)
+                row.ApprovedPlan = row.InputQuestion;
+        }
+        else if (command is AnswerPermission decided)
         {
             row.PermissionVerdict = decided.Verdict;
             row.PermissionOptionId = decided.OptionId;
@@ -1640,6 +1755,7 @@ public sealed class SessionStore(
         {
             AnswerPermission decision when !string.IsNullOrWhiteSpace(decision.Message)
                 => decision.Message,
+            AnswerPlan answered => answered.Message,
             EscalatePermission escalation => $"escalated to human: {escalation.Reason}",
             RequestInput ask when ask.Kind == InputRequestKind.Permission
                 => PermissionWaitDetail(ask),

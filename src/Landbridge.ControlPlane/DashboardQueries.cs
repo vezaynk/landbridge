@@ -381,6 +381,7 @@ public sealed partial class DashboardQueries(
         var inputRequests = taskRows
             .Where(t => t.BlockedAt is not null
                 && t.InputKind != InputRequestKind.Permission
+                && t.InputKind != InputRequestKind.Plan
                 && (t.State == SessionState.BlockedOnInput || t.State == SessionState.Working))
             .Select(t => new InputRequestView(
                 t.SessionId, t.Namespace, teamId, t.BlockedAt, t.InputKind, t.Question))
@@ -505,6 +506,7 @@ public sealed partial class DashboardQueries(
 
         var questions = await scopedTasks
             .Where(t => t.InputKind != InputRequestKind.Permission
+                        && t.InputKind != InputRequestKind.Plan
                         && t.InputKind != null
                         && t.BlockedAt != null
                         && (t.State == SessionState.BlockedOnInput

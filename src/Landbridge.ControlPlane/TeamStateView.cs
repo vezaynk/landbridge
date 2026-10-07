@@ -170,6 +170,12 @@ public sealed record PermissionRequestView(
 /// through unchanged, deny carries <see cref="Message"/> so the refusal teaches the agent
 /// something instead of just stopping it.
 /// </summary>
+/// <summary>
+/// What <c>submit_plan</c> returns once the Lead decides. Approve stored the
+/// submitted prose. Deny did not, and <see cref="Message"/> is the revision note.
+/// </summary>
+public sealed record PlanOutcome(PlanVerdict Verdict, string? Message);
+
 public sealed record PermissionOutcome(
     PermissionVerdict Verdict, string? Message, string? OptionId = null);
 

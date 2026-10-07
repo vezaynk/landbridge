@@ -77,6 +77,19 @@ public enum Rule
     PermissionOptionMustBeOffered = 118,
 
     /// <summary>
+    /// A plan denial must say why. The worker is blocked inside
+    /// <c>submit_plan</c> and the message is what it revises against.
+    /// </summary>
+    PlanDenialCarriesMessage = 119,
+
+    /// <summary>
+    /// <c>answer_plan</c> is the only answer to a plan wait. Prose redispatch
+    /// and a permission verdict both refuse it, and <c>answer_plan</c> refuses
+    /// everything that is not a plan.
+    /// </summary>
+    PlanVerdictAnswersPlanRequests = 120,
+
+    /// <summary>
     /// §8.2: a service name is the Team-scoped <em>address</em> of an endpoint, so at most one
     /// live registration may hold it. Store-enforced (and backed by a unique index), because
     /// it is an invariant about rows rather than about one task's state: everything that

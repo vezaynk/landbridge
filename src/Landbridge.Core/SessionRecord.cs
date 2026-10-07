@@ -153,7 +153,7 @@ public sealed record SessionRecord
             return SessionState.Failed;
         if (t.OccupancyDesired == Occupancy.OnDisk)
             return SessionState.Parked;
-        if (t.MessageState == MessageState.AwaitingPermission)
+        if (t.MessageState is MessageState.AwaitingPermission or MessageState.AwaitingPlan)
             return SessionState.BlockedOnInput;
         if (t.OccupancyDesired == Occupancy.Running
             && t.OccupancyObserved == Occupancy.None

@@ -53,6 +53,7 @@ public enum LeadInboxKind
 {
     Failed,
     Permission,
+    Plan,
     Question,
     SpawnRequest,
     AuthHelp,
@@ -87,6 +88,7 @@ public static class LeadInboxKindMapping
         var live = message switch
         {
             MessageState.AwaitingPermission => LeadInboxKind.Permission,
+            MessageState.AwaitingPlan => LeadInboxKind.Plan,
             MessageState.AwaitingReport => LeadInboxKind.Report,
             MessageState.AwaitingPull => LeadInboxKind.Pull,
             MessageState.AwaitingLead => inputKind switch
@@ -112,6 +114,7 @@ public static class LeadInboxKindMapping
     {
         LeadInboxKind.Failed => 0,
         LeadInboxKind.Permission => 1,
+        LeadInboxKind.Plan => 1,
         LeadInboxKind.Report => 2,
         LeadInboxKind.Pull => 4,
         _ => 3,

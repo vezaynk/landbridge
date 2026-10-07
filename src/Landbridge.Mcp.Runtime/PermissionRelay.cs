@@ -35,23 +35,27 @@ public static class PermissionRelay
         if (classifier is not null)
         {
             IReadOnlyList<string> leadMessages = [];
+            string? plan = null;
             try
             {
                 leadMessages = await store
                     .GetLeadWorkerMessagesAsync(caller.Session, ct)
                     .ConfigureAwait(false);
+                plan = await store
+                    .GetApprovedPlanAsync(caller.Session, ct)
+                    .ConfigureAwait(false);
             }
             catch
             {
                 // Context is best-effort: a read miss still classifies, just
-                // without the brief. Fail-closed on the classify call itself.
+                // without the brief or the plan. Fail-closed on the classify call itself.
             }
 
             PermissionDisposition classified;
             try
             {
                 classified = await classifier
-                    .ClassifyAsync(caller.Session, tool, proposedInput, leadMessages, ct)
+                    .ClassifyAsync(caller.Session, tool, proposedInput, leadMessages, ct, plan)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException)

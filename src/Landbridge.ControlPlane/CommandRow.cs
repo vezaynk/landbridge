@@ -20,6 +20,8 @@ public sealed class CommandRow
     public const string InputResponse = "input_response";
     public const string InputRequest = "input_request";
     public const string Permission = "permission";
+    public const string SubmitPlan = "submit_plan";
+    public const string AnswerPlan = "answer_plan";
     public const string Report = "report";
     public const string Ask = "ask";
     public const string RegisterService = "register_service";
