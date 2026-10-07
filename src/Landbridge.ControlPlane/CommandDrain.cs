@@ -116,7 +116,12 @@ public sealed class CommandDrain(
                     payload.Description ?? "", payload.Profile ?? "default",
                     session),
                 ct),
-            CommandRow.StopSession => await StopAsync(store, registry, session, new LeadClaim(team), payload, ct),
+            CommandRow.StopSession => await SessionStop.ApplyAndSignalAsync(
+                store, registry, session, new LeadClaim(team),
+                payload.TtlSeconds is null
+                    ? TimeSpan.FromMinutes(5)
+                    : TimeSpan.FromSeconds(Math.Max(0, payload.TtlSeconds.Value)),
+                ct),
             CommandRow.ParkSession => await ParkAsync(store, registry, session, new LeadClaim(team), ct),
             CommandRow.InputResponse => await store.SendInputResponseAsync(
                 new LeadClaim(team), session, registry.MachineFor(session), payload.Answer,
@@ -173,24 +178,6 @@ public sealed class CommandDrain(
         row.AppliedAt = clock.GetUtcNow();
         HubOutbox.Stage(db, clock, HubQueueRow.CommandsTopic, row.Id);
         await HubOutbox.SaveAndNotifyAsync(db, row.SessionId, ct);
-    }
-
-    private static async Task<StoreResult> StopAsync(
-        SessionStore store, RunnerConnectionRegistry registry, SessionId session, LeadClaim lead,
-        CommandPayload payload, CancellationToken ct)
-    {
-        var ttl = payload.TtlSeconds is null ? TimeSpan.FromMinutes(5)
-            : TimeSpan.FromSeconds(Math.Max(0, payload.TtlSeconds.Value));
-        var machine = registry.MachineFor(session);
-        var applied = await store.ApplyAsync(session, new StopSession(lead), ct);
-        if (applied is StoreResult.Applied ok
-            && ok.Session.OccupancyObserved == Occupancy.Running
-            && machine is not null)
-        {
-            await registry.SendAsync(machine.Value,
-                new StopCommand(session, ttl, StopDisposition.Preserve, "stop"), ct);
-        }
-        return applied;
     }
 
     private static async Task<StoreResult> ParkAsync(

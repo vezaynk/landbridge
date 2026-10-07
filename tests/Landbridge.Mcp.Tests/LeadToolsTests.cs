@@ -195,6 +195,98 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("Completed", msg);
     }
 
+    /// <summary>
+    /// Dispatch stamps the instance and the registry before <c>started</c> sets observed
+    /// running. Stop still has to reach that machine (#127).
+    /// </summary>
+    [SkippableFact]
+    public async Task Stop_session_tells_the_runner_before_started_has_landed()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = new SessionStore(db, _clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(new LeadClaim(Team), Team, "build the thing", "default"));
+        await store.DispatchNextAsync(Machine(), WorkerInstanceId.New());
+
+        await using var before = pg.NewContext();
+        var dispatched = await before.Sessions.AsNoTracking().SingleAsync(t => t.Id == created.Session.Id.Value);
+        Assert.Equal(Occupancy.None, dispatched.OccupancyObserved);
+        Assert.NotNull(dispatched.CurrentInstanceId);
+
+        var sent = new List<RunnerCommand>();
+        var registry = CapturingRegistry(sent);
+        registry.TrackDispatch(M1, created.Session.Id);
+
+        var msg = await LeadFor(Factory, registry).StopSession(
+            created.Session.Id.ToString(), Tid, CancellationToken.None);
+        Assert.Contains("Completed", msg);
+
+        var stop = Assert.IsType<StopCommand>(Assert.Single(sent));
+        Assert.Equal(created.Session.Id, stop.Session);
+        Assert.Equal(LeadTools.DefaultStopTtl, stop.Ttl);
+        Assert.Equal(StopDisposition.Preserve, stop.Disposition);
+        Assert.Equal("stop", stop.Reason);
+
+        await using var after = pg.NewContext();
+        var row = await after.Sessions.AsNoTracking().SingleAsync(t => t.Id == created.Session.Id.Value);
+        Assert.True(row.Hidden);
+        Assert.Equal(SessionState.Completed, row.State);
+    }
+
+    /// <summary>
+    /// Dispatch records the machine on the instance row. Stop addresses that machine
+    /// when the registry is not tracking the session (#127).
+    /// </summary>
+    [SkippableFact]
+    public async Task Stop_session_signals_the_instance_machine_when_the_registry_is_not_tracking_it()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = new SessionStore(db, _clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(new LeadClaim(Team), Team, "build the thing", "default"));
+        await store.DispatchNextAsync(Machine(), WorkerInstanceId.New());
+
+        var sent = new List<RunnerCommand>();
+        var registry = CapturingRegistry(sent);
+        Assert.Null(registry.MachineFor(created.Session.Id));
+
+        await LeadFor(Factory, registry).StopSession(
+            created.Session.Id.ToString(), Tid, CancellationToken.None, ttlSeconds: 0);
+
+        var stop = Assert.IsType<StopCommand>(Assert.Single(sent));
+        Assert.Equal(created.Session.Id, stop.Session);
+        Assert.Equal(TimeSpan.Zero, stop.Ttl);
+        Assert.Equal(StopDisposition.Preserve, stop.Disposition);
+        Assert.Equal("stop", stop.Reason);
+    }
+
+    [SkippableFact]
+    public async Task Stop_session_on_a_session_that_never_dispatched_sends_nothing()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var sent = new List<RunnerCommand>();
+        var tools = LeadFor(Factory, CapturingRegistry(sent));
+        var idText = await tools.CreateSession("build the thing", "default", Tid, CancellationToken.None);
+
+        var msg = await tools.StopSession(idText, Tid, CancellationToken.None);
+
+        Assert.Contains("Completed", msg);
+        Assert.Empty(sent);
+    }
+
+    private RunnerConnectionRegistry CapturingRegistry(List<RunnerCommand> sent)
+    {
+        var registry = new RunnerConnectionRegistry(_clock);
+        registry.Register(M1, new HashSet<string> { "default" }, (cmd, _) =>
+        {
+            sent.Add(cmd);
+            return Task.CompletedTask;
+        });
+        return registry;
+    }
+
     [SkippableFact]
     public async Task Send_input_request_unhides_a_stopped_session_that_had_run()
     {
