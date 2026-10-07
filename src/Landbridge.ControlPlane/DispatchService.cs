@@ -373,10 +373,17 @@ public sealed class DispatchService : IHostedService
                 task.Id, machineId);
         }
 
-        // §10: the submitted→working transition already committed, but nothing is
-        // running — requeue against the infrastructure counter.
-        _registry.Untrack(task.Id);
-        await RequeueUndispatchedAsync(task.Id, ct);
+        // §10: the claim committed and nothing is running. The loss names this attempt
+        // (#167). A successor that landed while the send was failing is left alone, and
+        // stays tracked — untracking first would take the clock off that successor.
+        var requeued = await RequeueUndispatchedAsync(task.Id, instance, ct);
+        if (requeued is StoreResult.Applied)
+            _registry.Untrack(task.Id);
+        else
+            _logger.LogInformation(
+                "ack-timeout requeue of task {Task} on {Machine} did not apply ({Result}); " +
+                "the dispatch it claimed has moved on",
+                task.Id, machineId, requeued.GetType().Name);
         return DispatchOutcome.SendFailed;
     }
 
@@ -386,17 +393,24 @@ public sealed class DispatchService : IHostedService
     /// task back in the queue — which also revokes the instance minted for the dead attempt
     /// (§9.14) and counts against the infrastructure requeue cap (§9 check 7).
     ///
+    /// <para><paramref name="instance"/> is the attempt this send claimed. The loss applies
+    /// only while that attempt is still incumbent (#167), so a disconnect that already
+    /// requeued and redispatched the task is not charged again. The caller untracks only
+    /// when this applies.</para>
+    ///
     /// <para>On a scope of its own, deliberately. The caller's store shares one DbContext
     /// with the token mint, and a mint that threw part-way through its <c>SaveChanges</c>
     /// leaves its credential row tracked as Added on that context — so requeueing through
     /// the same store would re-attempt the very write that just failed and lose the requeue
     /// to the same exception. A fresh scope owes nothing to whatever broke.</para>
     /// </summary>
-    private async Task RequeueUndispatchedAsync(SessionId task, CancellationToken ct)
+    private async Task<StoreResult> RequeueUndispatchedAsync(
+        SessionId task, WorkerInstanceId instance, CancellationToken ct)
     {
         using var scope = _scopes.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
-        await store.ApplyAsync(task, new LivenessLost(LivenessLossReason.AckTimeout), ct);
+        return await store.ApplyAsync(
+            task, new LivenessLost(LivenessLossReason.AckTimeout, instance), ct);
     }
 
     /// <summary>
