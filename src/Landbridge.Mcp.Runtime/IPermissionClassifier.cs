@@ -11,7 +11,8 @@ public interface IPermissionClassifier
 {
     Task<PermissionDisposition> ClassifyAsync(
         SessionId session, string tool, string proposedInput,
-        IReadOnlyList<string> leadMessages, CancellationToken ct);
+        IReadOnlyList<string> leadMessages, CancellationToken ct,
+        string? plan = null);
 }
 
 /// <summary>No classifier configured: every call Asks.</summary>
@@ -21,6 +22,7 @@ public sealed class NullPermissionClassifier : IPermissionClassifier
 
     public Task<PermissionDisposition> ClassifyAsync(
         SessionId session, string tool, string proposedInput,
-        IReadOnlyList<string> leadMessages, CancellationToken ct)
+        IReadOnlyList<string> leadMessages, CancellationToken ct,
+        string? plan = null)
         => Task.FromResult(PermissionDisposition.Ask);
 }

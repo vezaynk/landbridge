@@ -37,6 +37,7 @@ public static class SessionTaskProjection
     {
         MessageState.AwaitingLead
             or MessageState.AwaitingPermission
+            or MessageState.AwaitingPlan
             or MessageState.AwaitingReport => SessionTaskStatus.InputRequired,
         MessageState.AwaitingPull => SessionTaskStatus.Working,
         _ => SessionTaskStatus.Working,
@@ -60,6 +61,8 @@ public static class SessionTaskProjection
     {
         MessageState.AwaitingPermission =>
             "permission wait; answer_permission_request",
+        MessageState.AwaitingPlan =>
+            "plan wait; get_lead_inbox(teamId, sessionId) then answer_plan",
         MessageState.AwaitingLead =>
             "waiting on the Lead; get_lead_inbox(teamId, sessionId) then send_input_response",
         MessageState.AwaitingReport =>

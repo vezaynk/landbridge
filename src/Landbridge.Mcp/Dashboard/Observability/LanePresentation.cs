@@ -29,6 +29,9 @@ public sealed record LaneMeta(string ColorVar, string Label, string Envelope, bo
         if (ConnectionLost(lane, now))
             return new("--state-wait", "lost connection", EnvelopeName(lane.MessageState), false, 1.0);
 
+        if (lane.InputKind == InputRequestKind.Plan && lane.State == SessionState.BlockedOnInput)
+            return new("--state-wait", "plan", EnvelopeName(lane.MessageState), true, 1.0);
+
         if (lane.State == SessionState.BlockedOnInput
             || (lane.State == SessionState.Working && lane.InputKind == InputRequestKind.Permission && lane.BlockedAt is not null))
             return new("--state-wait", "permission", EnvelopeName(lane.MessageState), true, 1.0);
@@ -54,6 +57,7 @@ public sealed record LaneMeta(string ColorVar, string Label, string Envelope, bo
         MessageState.Idle => "idle",
         MessageState.AwaitingLead => "awaiting_lead",
         MessageState.AwaitingPermission => "awaiting_permission",
+        MessageState.AwaitingPlan => "awaiting_plan",
         MessageState.AwaitingReport => "awaiting_report",
         MessageState.AwaitingPull => "awaiting_pull",
         _ => state.ToString().ToLowerInvariant(),
@@ -76,6 +80,8 @@ public static class LaneNow
             return lane.State.ToString().ToLowerInvariant();
         if (LaneMeta.ConnectionLost(lane, now))
             return $"last heartbeat {DashboardFormat.Age(lane.LastHeartbeat, now)}";
+        if (lane.InputKind == InputRequestKind.Plan)
+            return Truncate(lane.Question, 72) is { } plan ? $"plan: {plan}" : "plan";
         if (lane.InputKind == InputRequestKind.Permission)
             return string.IsNullOrWhiteSpace(lane.PermissionTool)
                 ? Truncate(lane.Question, 72) ?? "permission"

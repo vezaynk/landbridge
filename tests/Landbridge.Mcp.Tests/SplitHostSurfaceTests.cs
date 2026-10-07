@@ -93,12 +93,16 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("bind_machine", lead);
         Assert.Contains("read_transcript", lead);
         Assert.Contains("answer_permission_requests", lead);
+        Assert.Contains("answer_plan", lead);
         Assert.DoesNotContain("report_result", lead);
+        Assert.DoesNotContain("submit_plan", lead);
         Assert.DoesNotContain("register_service", lead);
 
         Assert.Contains("report_result", worker);
         Assert.Contains("register_service", worker);
+        Assert.Contains("submit_plan", worker);
         Assert.DoesNotContain("create_session", worker);
+        Assert.DoesNotContain("answer_plan", worker);
         Assert.DoesNotContain("bind_machine", worker);
         Assert.DoesNotContain("read_transcript", worker);
         Assert.DoesNotContain("answer_permission_requests", worker);

@@ -173,6 +173,14 @@ Nothing stops your processes automatically — not your turn ending, not the ses
 - **Check what is already running** with `list_processes` — it shows the processes agents started, plus whether each has stdin open (so you know whether a graceful stop exists before you call one).
 - **Pick specific names.** They are unique per machine, so `build-payments` is a good name and `build` will collide with somebody. A suffix is the cheapest way to be safe: `dev-<short-session-id>`, or `<project>-<purpose>`. A name is released once the process exits, so a retry can reuse it.
 
+## Submitting a plan
+
+Once you have seen the repo, you may call `submit_plan` with a prose description of the work and the commands and tools you expect to run. It is optional. The call waits until the Lead approves or denies it. Approve may include a note. Deny includes one, so revise the plan and submit again.
+
+Only an approved plan is stored. A revision that is still waiting does not replace it. The stored plan is context when a later command is classified. It is not a grant: write the plan as prose, not as a list of commands you need pre-approved. sudo, secrets, and a host the brief never named can still be asked even if the plan mentioned them.
+
+Do not call `submit_plan` for a decision you are blocked on. That is still `request_input`.
+
 ## Asking questions
 
 You have one channel: `request_input` to your Lead. Use it when you are genuinely blocked or when a decision is above your scope.

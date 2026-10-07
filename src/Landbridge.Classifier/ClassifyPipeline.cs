@@ -5,7 +5,8 @@ namespace Landbridge.Classifier;
 public sealed class ClassifyPipeline(ILlmJudge llm)
 {
     public async Task<ClassifyResponse> ClassifyAsync(
-        string tool, JsonElement? input, IReadOnlyList<string>? messages, CancellationToken ct)
+        string tool, JsonElement? input, IReadOnlyList<string>? messages, CancellationToken ct,
+        string? plan = null)
     {
         var command = CommandExtract.Resolve(tool, input);
 
@@ -25,6 +26,6 @@ public sealed class ClassifyPipeline(ILlmJudge llm)
             return ClassifyResult.Ask(via);
         }
 
-        return await llm.JudgeAsync(tool, input, command, messages, ct).ConfigureAwait(false);
+        return await llm.JudgeAsync(tool, input, command, messages, ct, plan).ConfigureAwait(false);
     }
 }

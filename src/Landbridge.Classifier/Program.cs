@@ -31,7 +31,7 @@ app.MapPost("/classify", async (ClassifyRequest body, ClassifyPipeline pipeline,
         return Results.Json(ClassifyResult.Ask("bad-request"));
     }
 
-    var result = await pipeline.ClassifyAsync(body.Tool, body.Input, body.Messages, ct)
+    var result = await pipeline.ClassifyAsync(body.Tool, body.Input, body.Messages, ct, body.Plan)
         .ConfigureAwait(false);
     log.LogInformation(
         "classifier {Disposition} via={Via} tool={Tool}",

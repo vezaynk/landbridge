@@ -24,6 +24,13 @@ public enum MessageState
     Idle,
     AwaitingLead,
     AwaitingPermission,
+
+    /// <summary>
+    /// A worker <c>submit_plan</c> is open. Like a permission, the process is
+    /// still inside the tool call, so the answer resumes it in place. Unlike a
+    /// permission, the answer is approve or deny of prose, not a harness option.
+    /// </summary>
+    AwaitingPlan,
     AwaitingReport,
     AwaitingPull,
 }
@@ -119,6 +126,13 @@ public enum InputRequestKind
     /// park→redispatch path every other kind takes.
     /// </summary>
     Permission,
+
+    /// <summary>
+    /// A worker's prose plan, waiting on <c>answer_plan</c>. The process stays
+    /// inside <c>submit_plan</c> until the Lead approves or denies. Opened only
+    /// by <see cref="SubmitPlan"/>, never by <c>request_input</c>.
+    /// </summary>
+    Plan,
 }
 
 /// <summary>
@@ -126,6 +140,22 @@ public enum InputRequestKind
 /// chosen ACP option is an allow-kind or a reject-kind. Derived from the option the
 /// Lead or human picked; a classifier or legacy allow still maps to this binary.
 /// </summary>
+/// <summary>
+/// The Lead's decision on a <see cref="InputRequestKind.Plan"/>. Approve stores
+/// the submitted prose. Deny does not.
+/// </summary>
+public enum PlanVerdict
+{
+    /// <summary>The submitted plan is now the session's approved plan.</summary>
+    Approve,
+
+    /// <summary>
+    /// The submitted plan is not stored. Always carries a message, so the worker
+    /// can revise and submit again.
+    /// </summary>
+    Deny,
+}
+
 public enum PermissionVerdict
 {
     /// <summary>The tool call proceeds, with the input the harness proposed.</summary>

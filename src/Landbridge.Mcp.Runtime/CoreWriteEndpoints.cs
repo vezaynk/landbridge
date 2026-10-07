@@ -32,6 +32,8 @@ public static class CoreWriteEndpoints
         g.MapPost("/sessions/{id}/input-request", InputRequestAsync);
         g.MapPost("/sessions/{id}/permission", PermissionAsync);
         g.MapPost("/permissions", PermissionsAsync);
+        g.MapPost("/sessions/{id}/plan", SubmitPlanAsync);
+        g.MapPost("/sessions/{id}/plan/answer", AnswerPlanAsync);
         g.MapPost("/sessions/{id}/report", ReportAsync);
         g.MapPost("/sessions/{id}/inbox", PullInboxAsync);
         g.MapPost("/sessions/{id}/ask", AskAsync);
@@ -314,6 +316,40 @@ public static class CoreWriteEndpoints
                 return accepted;
         }
         return Store(await store.AnswerPermissionAsync(actor, session.Value, body.Option?.Trim() ?? "", body.Message, ct));
+    }
+
+    private static async Task<IResult> SubmitPlanAsync(
+        HttpContext http, string id, CoreSessionBody body, SessionStore store, CancellationToken ct)
+    {
+        var worker = Worker(http);
+        if (worker.Error is { } err)
+            return err;
+        if (worker.Caller!.Session.Value.ToString("D") != id
+            && !string.Equals(id, worker.Caller.Session.Value.ToString("N"), StringComparison.OrdinalIgnoreCase))
+            return Results.Json(new CoreStoreReply("rejected", Reason: "worker token is not for that session"),
+                CoreWriteClient.Json, statusCode: 403);
+        // The worker polls for the verdict after this returns, so the wait has
+        // to be open. Prefer: respond-async would hand back a queue id first.
+        return Store(await store.SubmitPlanAsync(worker.Caller, body.Text ?? "", ct));
+    }
+
+    private static async Task<IResult> AnswerPlanAsync(
+        HttpContext http, string id, CoreSessionBody body, SessionStore store, TokenService tokens,
+        FriendlyIds ids, CancellationToken ct)
+    {
+        var lead = await LeadOn(http, tokens, ids, body.TeamId, ct);
+        if (lead.Error is { } err)
+            return err;
+        var session = await ids.TrySessionAsync(id, ct);
+        if (session is null)
+            return Store(new StoreResult.NotFound("no such session"));
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.LeadActor, Lead(http).Principal!.CredentialId, lead.Claim!.Team.Value,
+                session.Value.Value, CommandRow.AnswerPlan,
+                new CommandPayload(Option: body.Option?.Trim(), Message: body.Message), ct) is { } accepted)
+            return accepted;
+        return Store(await store.AnswerPlanAsync(
+            lead.Claim!, session.Value, body.Option?.Trim() ?? "", body.Message, ct));
     }
 
     /// <summary>

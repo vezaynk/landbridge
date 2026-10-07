@@ -192,6 +192,28 @@ public sealed record AnswerInput(
 }
 
 /// <summary>
+/// working → blocked_on_input: the incumbent worker submitted a prose plan.
+/// The process stays inside <c>submit_plan</c>, so this is a live wait like a
+/// permission, not a turn-ending question. A second submit while this is open
+/// is refused; the approved plan, if any, is left where it is.
+/// </summary>
+public sealed record SubmitPlan(Actor Actor, string Plan) : SessionCommand(Actor)
+{
+    public const int MaxPlanBytes = RequestInput.MaxQuestionBytes;
+}
+
+/// <summary>
+/// blocked_on_input → working: the Lead approved or denied a plan. The
+/// incumbent stays. Approve is what copies the submitted prose onto the
+/// approved-plan column; deny does not. A deny requires a message.
+/// </summary>
+public sealed record AnswerPlan(
+    Actor Actor, PlanVerdict Verdict, string? Message = null) : SessionCommand(Actor)
+{
+    public const int MaxMessageBytes = AnswerInput.MaxAnswerBytes;
+}
+
+/// <summary>
 /// blocked_on_input → <b>working</b>: a permission request was decided (§11 permission
 /// bridge). The one answer path that resumes a worker <em>in place</em>, and the reason
 /// it has to exist: the harness's permission contract has no resumed-answer seam — it

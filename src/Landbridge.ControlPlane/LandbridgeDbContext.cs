@@ -111,6 +111,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             // request is undecided, which is exactly what the relaying worker tool polls
             // for.
             e.Property(t => t.PermissionVerdict).HasConversion<string>();
+            e.Property(t => t.PlanVerdict).HasConversion<string>();
             e.Property(t => t.Version).IsRowVersion(); // maps to Postgres xmin
         });
 

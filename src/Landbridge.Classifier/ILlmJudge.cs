@@ -6,5 +6,6 @@ public interface ILlmJudge
 {
     Task<ClassifyResponse> JudgeAsync(
         string tool, JsonElement? input, string? command,
-        IReadOnlyList<string>? messages, CancellationToken ct);
+        IReadOnlyList<string>? messages, CancellationToken ct,
+        string? plan = null);
 }

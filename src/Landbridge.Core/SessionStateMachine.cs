@@ -66,7 +66,9 @@ public static class SessionStateMachine
             VerdictAccept c => ApplyStopSession(task, c.Actor),
             VerdictFail c => ApplyStopSession(task, c.Actor),
             RequestInput c => ApplyRequestInput(task, c),
+            SubmitPlan c => ApplySubmitPlan(task, c),
             AnswerInput c => ApplyAnswerInput(task, c),
+            AnswerPlan c => ApplyAnswerPlan(task, c),
             AnswerPermission c => ApplyAnswerPermission(task, c),
             EscalatePermission c => ApplyEscalatePermission(task, c),
             WaitTtlExpired c => ApplyWaitTtlExpired(task, c),
@@ -315,6 +317,10 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.TypedRequestKindRequired,
                 "working → blocked_on_input requires a typed request kind");
 
+        if (c.Kind == InputRequestKind.Plan)
+            return TransitionResult.Reject(Rule.PlanVerdictAnswersPlanRequests,
+                "a plan is submit_plan, not request_input");
+
         // §10/§11: the question is what the worker is asking, bounded exactly as the
         // report is. Refusing here leaves the task working, so a worker whose question
         // was too long asks again, shorter — it is never blocked with no ask attached.
@@ -361,6 +367,35 @@ public static class SessionStateMachine
         });
     }
 
+    private static TransitionResult ApplySubmitPlan(SessionRecord task, SubmitPlan c)
+    {
+        if (task.Health != SessionHealth.Ok || task.Hidden)
+            return WrongState(task, SessionState.Working);
+        if (task.MessageState != MessageState.Idle)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "submit_plan requires an idle message envelope");
+        if (task.OccupancyObserved != Occupancy.Running && task.CurrentInstance is null)
+            return TransitionResult.Reject(Rule.PermissionWaiterStillIncumbent,
+                "a plan wait requires a live attempt");
+        if (RequireIncumbent(task, c.Actor) is { } rejection)
+            return rejection;
+        if (string.IsNullOrWhiteSpace(c.Plan))
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "a plan must describe the work");
+        if (OverCap(c.Plan, SubmitPlan.MaxPlanBytes, Rule.QuestionWithinSizeCap,
+                "plan",
+                "describe the work and the commands you expect, and point at the workspace for the detail")
+            is { } tooLong)
+            return tooLong;
+
+        return Done(task with
+        {
+            MessageState = MessageState.AwaitingPlan,
+            OccupancyObserved = Occupancy.Running,
+            PendingSpawn = null,
+        });
+    }
+
     private static TransitionResult ApplyAnswerInput(SessionRecord task, AnswerInput c)
     {
         if (task.State is not (SessionState.BlockedOnInput or SessionState.Working))
@@ -378,6 +413,9 @@ public static class SessionStateMachine
             || c.PendingKind == InputRequestKind.Permission)
             return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
                 "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+
+        if (RefusingPlan(task.MessageState, c.PendingKind) is { } planRefusal)
+            return planRefusal;
 
         // §10/§11: the answer's text is bounded like the question it answers. Refused
         // over-cap, which leaves the task blocked_on_input — better a still-waiting
@@ -425,8 +463,38 @@ public static class SessionStateMachine
     /// left, so there is nothing to dispatch to — the incumbent instance and its token are
     /// carried through untouched and the worker resumes inside the tool call it blocked in.
     /// </summary>
+    private static TransitionResult ApplyAnswerPlan(SessionRecord task, AnswerPlan c)
+    {
+        if (task.MessageState != MessageState.AwaitingPlan)
+            return TransitionResult.Reject(Rule.PlanVerdictAnswersPlanRequests,
+                "answer_plan decides a plan; this session is not waiting on one");
+
+        if (!IsLeadOrHuman(task, c.Actor))
+            return TransitionResult.Reject(Rule.ActorLacksAuthority,
+                "a plan is decided by the Lead of this Team or a human");
+
+        if (task.CurrentInstance is null)
+            return TransitionResult.Reject(Rule.PermissionWaiterStillIncumbent,
+                "the worker that submitted the plan is no longer the incumbent");
+
+        if (c.Verdict == PlanVerdict.Deny && string.IsNullOrWhiteSpace(c.Message))
+            return TransitionResult.Reject(Rule.PlanDenialCarriesMessage,
+                "a denial must carry a message: say why, so the worker can revise the plan");
+
+        if (OverCap(c.Message, AnswerPlan.MaxMessageBytes, Rule.AnswerWithinSizeCap,
+                "message",
+                "say why and what to change, and point at a reference for the detail")
+            is { } tooLong)
+            return tooLong;
+
+        return Done(task with { MessageState = MessageState.Idle });
+    }
+
     private static TransitionResult ApplyAnswerPermission(SessionRecord task, AnswerPermission c)
     {
+        if (RefusingPlan(task.MessageState, c.PendingKind) is { } planRefusal)
+            return planRefusal;
+
         if (task.MessageState != MessageState.AwaitingPermission)
         {
             if (task.MessageState is MessageState.Idle or MessageState.AwaitingLead
@@ -548,6 +616,9 @@ public static class SessionStateMachine
         if (task.MessageState == MessageState.AwaitingPermission)
             return TransitionResult.Reject(Rule.InvalidSourceState,
                 "deactivate is refused while awaiting_permission; the waiter is live in-process");
+        if (task.MessageState == MessageState.AwaitingPlan)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "deactivate is refused while awaiting_plan; the waiter is live in-process");
         if (task.OccupancyObserved != Occupancy.Running && task.CurrentInstance is null)
             return WrongState(task, SessionState.Working);
 
@@ -573,6 +644,9 @@ public static class SessionStateMachine
             || c.PendingKind == InputRequestKind.Permission)
             return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
                 "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+
+        if (RefusingPlan(task.MessageState, c.PendingKind) is { } planRefusal)
+            return planRefusal;
 
         if (!IsLeadOrHuman(task, c.Actor))
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
@@ -606,6 +680,9 @@ public static class SessionStateMachine
             || c.PendingKind == InputRequestKind.Permission)
             return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
                 "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+
+        if (RefusingPlan(task.MessageState, c.PendingKind) is { } planRefusal)
+            return planRefusal;
 
         if (!IsLeadOrHuman(task, c.Actor))
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
@@ -834,6 +911,12 @@ public static class SessionStateMachine
 
         return Done(next with { PendingSpawn = null }, effects.ToArray());
     }
+
+    private static TransitionResult? RefusingPlan(MessageState state, InputRequestKind? kind) =>
+        state == MessageState.AwaitingPlan || kind == InputRequestKind.Plan
+            ? TransitionResult.Reject(Rule.PlanVerdictAnswersPlanRequests,
+                "this session is waiting on a plan; answer it with answer_plan")
+            : null;
 
     /// <summary>
     /// The one length gate every in-band prose field passes (§10): the worker's report,

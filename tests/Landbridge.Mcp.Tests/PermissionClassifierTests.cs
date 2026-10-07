@@ -24,6 +24,23 @@ public sealed class PermissionClassifierTests
         Assert.Contains("\"input\":", posted, StringComparison.Ordinal);
         Assert.DoesNotContain("\"Tool\":", posted, StringComparison.Ordinal);
         Assert.DoesNotContain("\"messages\":", posted, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"plan\":", posted, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Client_posts_an_approved_plan_when_one_is_stored()
+    {
+        string? posted = null;
+        var http = ClientFor((req, _) =>
+        {
+            posted = req.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+            return Json(new { disposition = "allow", via = "classifier-fast" });
+        });
+        await http.ClassifyAsync(
+            Session, "Bash", """{"command":"pytest"}""", ["fix the build"],
+            CancellationToken.None, "run pytest on the fixture");
+        Assert.NotNull(posted);
+        Assert.Contains("\"plan\":\"run pytest on the fixture\"", posted, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -120,11 +137,15 @@ public sealed class PermissionClassifierTests
     {
         public bool Called { get; private set; }
 
+        public string? Plan { get; private set; }
+
         public Task<PermissionDisposition> ClassifyAsync(
             SessionId session, string tool, string proposedInput,
-            IReadOnlyList<string> leadMessages, CancellationToken ct)
+            IReadOnlyList<string> leadMessages, CancellationToken ct,
+            string? plan = null)
         {
             Called = true;
+            Plan = plan;
             return Task.FromResult(disposition);
         }
     }

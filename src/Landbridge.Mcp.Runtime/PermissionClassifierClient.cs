@@ -20,7 +20,8 @@ public sealed class PermissionClassifierClient(HttpClient http) : IPermissionCla
 
     public async Task<PermissionDisposition> ClassifyAsync(
         SessionId session, string tool, string proposedInput,
-        IReadOnlyList<string> leadMessages, CancellationToken ct)
+        IReadOnlyList<string> leadMessages, CancellationToken ct,
+        string? plan = null)
     {
         JsonElement? input = null;
         if (!string.IsNullOrWhiteSpace(proposedInput))
@@ -39,7 +40,8 @@ public sealed class PermissionClassifierClient(HttpClient http) : IPermissionCla
             "classify",
             new ClassifyRequest(
                 tool, input, session.Value.ToString("N"),
-                leadMessages.Count == 0 ? null : leadMessages),
+                leadMessages.Count == 0 ? null : leadMessages,
+                string.IsNullOrWhiteSpace(plan) ? null : plan),
             Json,
             ct).ConfigureAwait(false);
 
@@ -57,7 +59,8 @@ public sealed class PermissionClassifierClient(HttpClient http) : IPermissionCla
     }
 
     private sealed record ClassifyRequest(
-        string Tool, JsonElement? Input, string Session, IReadOnlyList<string>? Messages);
+        string Tool, JsonElement? Input, string Session, IReadOnlyList<string>? Messages,
+        string? Plan = null);
 
     private sealed record ClassifyResponse(string? Disposition, string? Via, string? Reason);
 }

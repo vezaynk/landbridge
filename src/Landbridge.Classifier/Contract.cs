@@ -7,7 +7,8 @@ public sealed record ClassifyRequest(
     string? Tool,
     JsonElement? Input,
     string? Session,
-    string[]? Messages);
+    string[]? Messages,
+    string? Plan = null);
 
 public sealed record ClassifyResponse(
     [property: JsonPropertyName("disposition")] string Disposition,

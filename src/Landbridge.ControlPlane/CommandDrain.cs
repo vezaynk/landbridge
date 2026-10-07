@@ -129,6 +129,14 @@ public sealed class CommandDrain(
             CommandRow.InputRequest => await store.SendInputRequestAsync(
                 new LeadClaim(team), session, registry.MachineFor(session), payload.Text,
                 registry.HasLiveProcess(session), ct),
+            CommandRow.SubmitPlan => await store.SubmitPlanAsync(
+                new WorkerCaller(team, session, new WorkerInstanceId(payload.InstanceId ?? Guid.Empty)),
+                payload.Text ?? "", ct),
+            CommandRow.AnswerPlan => await store.AnswerPlanAsync(
+                row.ActorKind == CommandRow.HumanActor
+                    ? new HumanSession()
+                    : new LeadClaim(team),
+                session, payload.Option ?? "", payload.Message, ct),
             CommandRow.Permission => await store.AnswerPermissionAsync(
                 row.ActorKind == CommandRow.HumanActor
                     ? new HumanSession()

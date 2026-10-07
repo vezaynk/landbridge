@@ -40,6 +40,43 @@ public sealed class ClassifyPipelineTests
     }
 
     [Fact]
+    public async Task An_approved_plan_does_not_bypass_the_destroy_guard()
+    {
+        var llm = new RecordingJudge();
+        var r = await Pipeline(llm).ClassifyAsync(
+            "Bash", El("""{"command":"git reset --hard"}"""), null, default,
+            "I will git reset --hard to match origin");
+        Assert.False(llm.Called);
+        Assert.Equal("ask", r.Disposition);
+        Assert.Equal("destructive-command", r.Via);
+    }
+
+    [Fact]
+    public async Task The_judge_is_told_the_approved_plan()
+    {
+        var llm = new RecordingJudge { Reply = ClassifyResult.Allow("classifier-fast") };
+        await Pipeline(llm).ClassifyAsync(
+            "Bash", El("""{"command":"git commit -am wip"}"""), ["fix the build"], default,
+            "commit the fixture change");
+        Assert.True(llm.Called);
+        Assert.Equal("commit the fixture change", llm.Plan);
+    }
+
+    [Fact]
+    public void The_user_message_carries_the_plan_beside_the_brief()
+    {
+        var withPlan = LlmJudge.BuildUserMessage("Bash", null, "git status", ["fix the build"], "run the tests");
+        Assert.Contains("fix the build", withPlan, StringComparison.Ordinal);
+        Assert.Contains("run the tests", withPlan, StringComparison.Ordinal);
+        Assert.Contains("APPROVED PLAN", withPlan, StringComparison.Ordinal);
+
+        var none = LlmJudge.BuildUserMessage("Bash", null, "git status", ["fix the build"]);
+        Assert.Contains("APPROVED PLAN", none, StringComparison.Ordinal);
+        Assert.Contains("(none)", none, StringComparison.Ordinal);
+        Assert.DoesNotContain("run the tests", none, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Destroy_guard_asks_without_llm()
     {
         var llm = new RecordingJudge();
@@ -108,12 +145,16 @@ public sealed class ClassifyPipelineTests
         public IReadOnlyList<string>? Messages { get; private set; }
         public ClassifyResponse Reply { get; set; } = ClassifyResult.Ask("classifier-unavailable");
 
+        public string? Plan { get; private set; }
+
         public Task<ClassifyResponse> JudgeAsync(
             string tool, JsonElement? input, string? command,
-            IReadOnlyList<string>? messages, CancellationToken ct)
+            IReadOnlyList<string>? messages, CancellationToken ct,
+            string? plan = null)
         {
             Called = true;
             Messages = messages;
+            Plan = plan;
             return Task.FromResult(Reply);
         }
     }
