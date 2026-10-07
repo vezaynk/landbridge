@@ -31,6 +31,7 @@ public static class CoreWriteEndpoints
         g.MapPost("/sessions/{id}/input-response", InputResponseAsync);
         g.MapPost("/sessions/{id}/input-request", InputRequestAsync);
         g.MapPost("/sessions/{id}/permission", PermissionAsync);
+        g.MapPost("/permissions", PermissionsAsync);
         g.MapPost("/sessions/{id}/report", ReportAsync);
         g.MapPost("/sessions/{id}/inbox", PullInboxAsync);
         g.MapPost("/sessions/{id}/ask", AskAsync);
@@ -313,6 +314,67 @@ public static class CoreWriteEndpoints
                 return accepted;
         }
         return Store(await store.AnswerPermissionAsync(actor, session.Value, body.Option?.Trim() ?? "", body.Message, ct));
+    }
+
+    /// <summary>
+    /// Several permission decisions in one call. Each row is applied on its own, and a
+    /// refusal stays in the result list so the decisions after it still run (#197).
+    /// </summary>
+    private static async Task<IResult> PermissionsAsync(
+        HttpContext http, CorePermissionBatchBody body, SessionStore store, TokenService tokens,
+        FriendlyIds ids, CancellationToken ct)
+    {
+        if (body.Decisions is not { Count: > 0 })
+            return Results.Json(new CoreStoreReply("rejected", Reason: "decisions is required"),
+                CoreWriteClient.Json, statusCode: StatusCodes.Status400BadRequest);
+        var lead = await LeadOn(http, tokens, ids, body.TeamId, ct);
+        if (lead.Error is { } err)
+            return err;
+
+        var prefer = PreferHeader.WantsRespondAsync(http.Request);
+        CommandQueue? queue = null;
+        string? idempotency = null;
+        if (prefer)
+        {
+            queue = http.RequestServices.GetRequiredService<CommandQueue>();
+            var key = http.Request.Headers["Idempotency-Key"].ToString();
+            idempotency = string.IsNullOrWhiteSpace(key) ? null : key;
+            PreferHeader.ApplyRespondAsync(http.Response);
+        }
+
+        var results = new List<PermissionAnswerResult>(body.Decisions.Count);
+        foreach (var decision in body.Decisions)
+        {
+            if (PermissionAnswerResult.Blank(decision) is { } blank)
+            {
+                results.Add(blank);
+                continue;
+            }
+            var session = await ids.TrySessionAsync(decision.SessionId, ct);
+            if (session is null)
+            {
+                results.Add(PermissionAnswerResult.Missing(decision.SessionId));
+                continue;
+            }
+            if (prefer)
+            {
+                // One batch key must not collapse every decision onto the first command.
+                var scoped = idempotency is null ? null : $"{idempotency}:{session.Value.Value:D}";
+                var row = await queue!.EnqueueAsync(
+                    CommandRow.LeadActor, Lead(http).Principal!.CredentialId, lead.Claim!.Team.Value,
+                    session.Value.Value, CommandRow.Permission,
+                    new CommandPayload(Option: decision.Option.Trim(), Message: decision.Message),
+                    ct, scoped);
+                results.Add(PermissionAnswerResult.From(decision.SessionId, CoreStoreReply.FromCommand(row)));
+                continue;
+            }
+            results.Add(PermissionAnswerResult.From(
+                decision.SessionId,
+                await store.AnswerPermissionAsync(
+                    lead.Claim!, session.Value, decision.Option.Trim(), decision.Message, ct)));
+        }
+        return Results.Json(results, CoreWriteClient.Json,
+            statusCode: prefer ? StatusCodes.Status202Accepted : StatusCodes.Status200OK);
     }
 
     private static async Task<IResult> PullInboxAsync(

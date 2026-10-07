@@ -320,6 +320,47 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(SessionState.Working, await StateOf(caller.Session));
     }
 
+    [SkippableFact]
+    public async Task A_batch_of_permission_answers_applies_each_and_continues_after_a_refusal()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var allow = await SeedWorkingTask();
+        var deny = await SeedWorkingTask();
+        var idle = await SeedWorkingTask();
+        var pendingAllow = await AskPermissionAsync(allow);
+        var pendingDeny = await AskPermissionAsync(deny);
+
+        var results = await LeadFor(Factory).AnswerPermissionRequests(Tid, [
+            new PermissionAnswer(allow.Session.ToString(), "allow"),
+            new PermissionAnswer(idle.Session.ToString(), "allow"),
+            new PermissionAnswer("not-a-session", "allow"),
+            new PermissionAnswer(deny.Session.ToString(), "deny", "use the fixture"),
+        ], CancellationToken.None);
+
+        Assert.Equal(
+            ["applied", "rejected", "not_found", "applied"],
+            results.Select(r => r.Status).ToArray());
+        Assert.Equal(allow.Session.ToString(), results[0].SessionId);
+        Assert.Equal(Rule.PermissionVerdictAnswersPermissionRequests.ToString(), results[1].Rule);
+        Assert.Equal("not-a-session", results[2].SessionId);
+        Assert.Equal(deny.Session.ToString(), results[3].SessionId);
+
+        Assert.True((await pendingAllow.WaitAsync(Patience)).Allow);
+        var denied = await pendingDeny.WaitAsync(Patience);
+        Assert.False(denied.Allow);
+        Assert.Equal("use the fixture", denied.Message);
+        Assert.Equal(SessionState.Working, await StateOf(idle.Session));
+    }
+
+    [SkippableFact]
+    public async Task An_empty_permission_batch_is_refused()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var refused = await Assert.ThrowsAsync<McpException>(
+            () => LeadFor(Factory).AnswerPermissionRequests(Tid, [], CancellationToken.None));
+        Assert.Contains("decisions is required", refused.Message);
+    }
+
     // ── Escalation ────────────────────────────────────────────────────────────
 
     [SkippableFact]

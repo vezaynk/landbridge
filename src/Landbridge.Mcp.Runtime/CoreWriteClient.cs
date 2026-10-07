@@ -51,13 +51,16 @@ public sealed class CoreWriteClient(HttpClient http, ILogger<CoreWriteClient> lo
         return reply;
     }
 
-    public async Task<T?> PostAsAsync<T>(string path, string bearer, object body, CancellationToken ct)
+    public async Task<T?> PostAsAsync<T>(
+        string path, string bearer, object body, CancellationToken ct, string? prefer = null)
     {
         using var req = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = JsonContent.Create(body, options: Json),
         };
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        if (!string.IsNullOrWhiteSpace(prefer))
+            req.Headers.TryAddWithoutValidation("Prefer", prefer);
         using var resp = await http.SendAsync(req, ct);
         T? parsed = default;
         try
@@ -150,6 +153,53 @@ public sealed record CoreConformanceBody(string Profile, IReadOnlyList<CoreConfo
 public sealed record CoreConformanceSession(Guid SessionId, string Kind, string State, int Attempt);
 public sealed record CoreConformanceReply(bool Ok, Guid? RunId, IReadOnlyList<CoreConformanceSession>? Sessions, string? Reason);
 public sealed record CoreSessionBody(string TeamId, int? TtlSeconds = null, string? Answer = null, string? Text = null, string? Option = null, string? Message = null, string? ResultReference = null, string? Report = null, string? Kind = null, string? Name = null, int? Port = null);
+
+/// <summary>
+/// One decision inside <c>answer_permission_requests</c>. The Lead still picks each
+/// harness option; the batch only stops those picks being one round-trip apiece.
+/// </summary>
+public sealed record PermissionAnswer(string SessionId, string Option, string? Message = null);
+
+public sealed record CorePermissionBatchBody(string TeamId, IReadOnlyList<PermissionAnswer> Decisions);
+
+/// <summary>
+/// What one entry of a permission batch did. A refusal is a row in this list, not an
+/// exception, so a later decision still applies.
+/// </summary>
+public sealed record PermissionAnswerResult(
+    string SessionId,
+    string Status,
+    string? State = null,
+    string? Rule = null,
+    string? Reason = null)
+{
+    public static PermissionAnswerResult? Blank(PermissionAnswer decision)
+    {
+        if (string.IsNullOrWhiteSpace(decision.SessionId))
+            return new("", "rejected", Reason: "sessionId is required");
+        if (string.IsNullOrWhiteSpace(decision.Option))
+            return new(decision.SessionId, "rejected",
+                Rule: Landbridge.Core.Rule.PermissionOptionMustBeOffered.ToString(),
+                Reason: "option is required: pick an optionId from get_lead_inbox, or 'allow'/'deny'.");
+        return null;
+    }
+
+    public static PermissionAnswerResult Missing(string sessionId) =>
+        new(sessionId, "not_found", Reason: $"'{sessionId}' is not a valid session id.");
+
+    public static PermissionAnswerResult From(string sessionId, StoreResult result) => result switch
+    {
+        StoreResult.Applied a => new(sessionId, "applied", a.Session.State.ToString(),
+            Reason: $"ok: session is now {a.Session.State}"),
+        StoreResult.Rejected r => new(sessionId, "rejected", Rule: r.Rule.ToString(), Reason: r.Reason),
+        StoreResult.NotFound n => new(sessionId, "not_found", Reason: n.Reason),
+        StoreResult.Conflict c => new(sessionId, "conflict", Reason: c.Reason),
+        _ => new(sessionId, "conflict", Reason: "unknown store result"),
+    };
+
+    public static PermissionAnswerResult From(string sessionId, CoreStoreReply reply) =>
+        new(sessionId, reply.Status, reply.State, reply.Rule, reply.Reason);
+}
 public sealed record CoreBindBody(string MachineId);
 public sealed record CoreProcessStartBody(string Name, string[] Spawn, string? WorkingDirectory, Dictionary<string, string>? Env, bool OpenStdin);
 public sealed record CoreProcessBody(string Name, string? Data = null, bool AppendNewline = true);

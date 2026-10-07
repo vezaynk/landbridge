@@ -92,6 +92,7 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("create_session", lead);
         Assert.Contains("bind_machine", lead);
         Assert.Contains("read_transcript", lead);
+        Assert.Contains("answer_permission_requests", lead);
         Assert.DoesNotContain("report_result", lead);
         Assert.DoesNotContain("register_service", lead);
 
@@ -100,6 +101,7 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.DoesNotContain("create_session", worker);
         Assert.DoesNotContain("bind_machine", worker);
         Assert.DoesNotContain("read_transcript", worker);
+        Assert.DoesNotContain("answer_permission_requests", worker);
 
         // report_friction is deliberately on both — either role may report it (§14).
         Assert.Contains("report_friction", lead);

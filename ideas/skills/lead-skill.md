@@ -46,7 +46,7 @@ Before creating a session, check that it carries:
 
 - **`send_input_request` with a note** — you want more from this same worker. Same session, same process if it is still up.
 - **`park_session`** — set `desired=on_disk` without hiding the row. Refused while a permission wait is live. Wake later is `send_input_request` (same id, `session/load`).
-- **`stop_session`** — hide the row and release occupancy. The process gets 5 minutes to wind down, then a kill (`ttlSeconds=0` kills immediately). Allowed mid-exchange (a question or a live permission wait). Not a grade of the work. More work on this same worker is `send_input_request` — it unhides and `session/load`s. A successor that should keep X closed while Y runs is not this tool (see `fork_session`, not yet).
+- **`stop_session`** — hide the row and release occupancy. The process gets 5 minutes to wind down, then a kill (`ttlSeconds=0` kills immediately). Allowed mid-exchange (a question or a live permission wait). Not a grade of the work. More work on this same worker is `send_input_request` — it unhides and `session/load`s.
 
 **Close when you are done with the worker, not to grade an artifact.** When you are unsure, reply with what is missing. When a report reveals the _session_ was wrong — the design shifted, the scope was off — take the delta to your human rather than papering over it.
 
@@ -111,7 +111,7 @@ Permissions arrive as ACP `session/request_permission`. There is no bypass / alw
 
 **The worker is running, blocked inside that tool call.** Occupancy stays `running`; `park_session` is refused while a permission wait is live. Your choice resumes it where it stands. Wait TTL is off by default.
 
-**You answer with one of the harness options, not prose.** `get_lead_inbox(teamId, sessionId)` shows the tool name, the arguments, and `permissionOptions` (`optionId`, `kind`, `name`); then `answer_permission_request(teamId, session, option, message)` with that `optionId`. `'allow'`/`'deny'` still pick the matching kind if you have not chosen a specific id. `send_input_request` / `send_input_response` are refused on these — they would treat a live wait as a redispatch.
+**You answer with one of the harness options, not prose.** `get_lead_inbox(teamId, sessionIds)` shows each tool name, the arguments, and `permissionOptions` (`optionId`, `kind`, `name`). One waiting session is `answer_permission_request(teamId, session, option, message)`. Several are one `answer_permission_requests(teamId, decisions)` call: each entry is `sessionId`, `option`, and `message`. A refusal comes back on that entry and the others still apply. `'allow'`/`'deny'` still pick the matching kind if you have not chosen a specific id. `send_input_request` / `send_input_response` are refused on these — they would treat a live wait as a redispatch.
 
 **Only deny dangerous requests, or ones that clearly go against the session's intent. Do not micro-manage workers.** Approve the ordinary case — builds, tests, installs the work obviously needs, talking to the hosts the brief names — and do it quickly. A worker waiting on you to rubber-stamp `npm test` is a leak.
 
