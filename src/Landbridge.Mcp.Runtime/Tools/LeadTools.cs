@@ -397,6 +397,85 @@ public sealed class LeadTools(
         return Describe(await store.AnswerPermissionAsync(lead, id, option.Trim(), message, ct));
     }
 
+    [McpServerTool(Name = "answer_permission_requests"),
+     Description("Decide several permission requests in one call. Each entry is one session: " +
+                 "sessionId, option (an optionId from get_lead_inbox, or 'allow'/'deny'), and message " +
+                 "(required on a deny). The worker behind each request is still running, so answer " +
+                 "promptly. One entry's refusal is reported on that entry and the rest still apply. " +
+                 "A single request stays answer_permission_request.")]
+    public async Task<IReadOnlyList<PermissionAnswerResult>> AnswerPermissionRequests(
+        [Description("The Team that owns these sessions. From create_team, or a human-supplied id.")]
+        string teamId,
+        [Description("One decision per waiting session, in the order to apply them.")]
+        PermissionAnswer[] decisions,
+        CancellationToken ct = default)
+    {
+        if (decisions is not { Length: > 0 })
+            throw new McpException(
+                "decisions is required: pass one entry per session, each with sessionId and option.");
+        var lead = await LeadOn(teamId, ct);
+
+        if (http.HttpContext?.RequestServices?.GetService<CommandQueue>() is { Enabled: true } queue)
+            return await AnswerPermissionsViaQueueAsync(queue, lead, decisions, ct);
+
+        if (http.HttpContext?.RequestServices?.GetService<CoreWriteClient>() is { Enabled: true } core
+            && InboundBearer is { Length: > 0 } bearer)
+        {
+            var prefer = http.HttpContext?.Request.Headers["Prefer"].ToString();
+            return await core.PostAsAsync<List<PermissionAnswerResult>>(
+                    "/core/v1/permissions", bearer, new CorePermissionBatchBody(teamId, decisions), ct, prefer)
+                ?? throw new McpException("core /core/v1/permissions returned no body");
+        }
+
+        var results = new List<PermissionAnswerResult>(decisions.Length);
+        foreach (var decision in decisions)
+            results.Add(await AnswerPermissionLocalAsync(lead, decision, ct));
+        return results;
+    }
+
+    private async Task<IReadOnlyList<PermissionAnswerResult>> AnswerPermissionsViaQueueAsync(
+        CommandQueue queue, LeadClaim lead, IReadOnlyList<PermissionAnswer> decisions, CancellationToken ct)
+    {
+        var prefer = http.HttpContext is { } ctx && PreferHeader.WantsRespondAsync(ctx.Request);
+        var actorId = LeadPrincipal.CredentialId;
+        var results = new List<PermissionAnswerResult>(decisions.Count);
+        foreach (var decision in decisions)
+        {
+            if (PermissionAnswerResult.Blank(decision) is { } blank)
+            {
+                results.Add(blank);
+                continue;
+            }
+            if (await ids.TrySessionAsync(decision.SessionId, ct) is not { } session)
+            {
+                results.Add(PermissionAnswerResult.Missing(decision.SessionId));
+                continue;
+            }
+            var payload = new CommandPayload(Option: decision.Option.Trim(), Message: decision.Message);
+            var row = prefer
+                ? await queue.EnqueueAsync(
+                    CommandRow.LeadActor, actorId, lead.Team.Value, session.Value,
+                    CommandRow.Permission, payload, ct)
+                : await queue.EnqueueAndWaitAsync(
+                    CommandRow.LeadActor, actorId, lead.Team.Value, session.Value,
+                    CommandRow.Permission, payload, ct);
+            results.Add(PermissionAnswerResult.From(decision.SessionId, CoreStoreReply.FromCommand(row)));
+        }
+        return results;
+    }
+
+    private async Task<PermissionAnswerResult> AnswerPermissionLocalAsync(
+        LeadClaim lead, PermissionAnswer decision, CancellationToken ct)
+    {
+        if (PermissionAnswerResult.Blank(decision) is { } blank)
+            return blank;
+        if (await ids.TrySessionAsync(decision.SessionId, ct) is not { } session)
+            return PermissionAnswerResult.Missing(decision.SessionId);
+        return PermissionAnswerResult.From(
+            decision.SessionId,
+            await store.AnswerPermissionAsync(lead, session, decision.Option.Trim(), decision.Message, ct));
+    }
+
     [McpServerTool(Name = "get_lead_inbox"),
      Description("Read this Team's outstanding inbox items right now: failed, permission, report, " +
                  "question / spawn_request / auth_help, and pull (worker-owed). Team-wide is identifiers " +
