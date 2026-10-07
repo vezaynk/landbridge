@@ -67,6 +67,13 @@ namespace Landbridge.ControlPlane.Tests;
 /// consequence for tracking — a refused requeue must not untrack, or the task it left alone is
 /// left under no clock.</para>
 ///
+/// <para><b>#167 — an ack-timeout could charge the successor.</b> A failed send requeued
+/// with a <see cref="LivenessLost"/> that named no attempt, and it had already dropped the
+/// session from the registry. A disconnect in that window requeues and redispatches; the
+/// late loss then counted against the new attempt, and the early untrack left that attempt
+/// under no clock. The loss now names the instance the send claimed, and the registry entry
+/// is dropped only when that loss commits.</para>
+///
 /// <para><b>A failing dispatch pass could stop dispatch for the process's life.</b> The
 /// loop's only error handling wrapped the whole <c>await foreach</c>, so one throw from one
 /// pass was logged once and <c>LoopAsync</c> returned — nothing restarts it, and the plane
@@ -833,6 +840,52 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(0, await verify.WorkerInstances.CountAsync(w => w.SessionId == task.Value && !w.Revoked));
     }
 
+    /// <summary>
+    /// The claim has committed and the send is failing. In that window another path requeues
+    /// and redispatches. The ack-timeout names the attempt it claimed, so it does not charge
+    /// the successor, and it leaves the successor tracked (#167).
+    /// </summary>
+    [SkippableFact]
+    public async Task A_failed_send_does_not_requeue_the_successor_that_replaced_its_attempt()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var m1 = await EnrollWireAsync(clock);
+        var task = await SeedSubmittedAsync(clock);
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(m1, Set("default"), (_, _) => throw new IOException("the socket is gone"));
+        Beat(clock, m1);
+
+        var successor = WorkerInstanceId.New();
+        var raced = new CommitBeforeSecondSessionRead(async () =>
+        {
+            await using (var requeue = pg.NewContext())
+            {
+                var store = new SessionStore(requeue, clock);
+                Assert.IsType<StoreResult.Applied>(await store
+                    .ApplyAsync(task, new LivenessLost(LivenessLossReason.MachineReboot)));
+                Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(task, new WakeParked()));
+            }
+            await using var redispatch = pg.NewContext();
+            Assert.IsType<StoreResult.Applied>(await new SessionStore(redispatch, clock).DispatchNextAsync(
+                new MachineSnapshot(m1, Ready: true, UnderBackPressure: false, Set("default")),
+                successor));
+        });
+
+        await NewDispatch(clock, registry, raced).RunDispatchPassAsync(default);
+
+        Assert.True(raced.Fired, "the ack-timeout read of the task row was never intercepted");
+        await using var verify = pg.NewContext();
+        var row = await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value);
+        Assert.Equal(SessionState.Working, row.State);
+        Assert.Equal(successor.Value, row.CurrentInstanceId);
+        Assert.Equal(1, row.InfrastructureRequeues);
+        Assert.Equal([LivenessLossReason.MachineReboot], await RequeueReasonsAsync(task));
+        Assert.False(await verify.WorkerInstances.AsNoTracking()
+            .Where(w => w.Id == successor.Value).Select(w => w.Revoked).SingleAsync());
+        Assert.Contains(task, registry.SessionsOn(m1));
+    }
+
     [SkippableFact]
     public async Task A_pass_that_throws_does_not_end_the_dispatch_loop()
     {
@@ -943,6 +996,38 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
             {
                 Fired = true;
                 await commit();
+            }
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Commits a successor in the window a failed send leaves open: the callback runs once,
+    /// immediately before the ack-timeout's own read of the task row. The claim's full-row
+    /// read is the first one and is left alone. Forcing the window open here makes the race
+    /// a deterministic test (#167). The callback commits on its own context, so what it lands
+    /// is exactly what another requeue path would have landed at that instant.
+    /// </summary>
+    private sealed class CommitBeforeSecondSessionRead(Func<Task> commit) : DbCommandInterceptor
+    {
+        public bool Fired { get; private set; }
+
+        private int _fullReads;
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            // A full session-row load. The claim's is the first; the ack-timeout's is the
+            // second. The SKIP LOCKED claim query names current_instance_id and is not this.
+            if (command.CommandText.Contains("harness_session_ref", StringComparison.Ordinal))
+            {
+                _fullReads++;
+                if (_fullReads == 2 && !Fired)
+                {
+                    Fired = true;
+                    await commit();
+                }
             }
             return result;
         }
