@@ -38,13 +38,17 @@ public static class PermissionPolicy
         if (string.IsNullOrWhiteSpace(tool))
             return false;
         var s = tool.Trim();
-        // Harness spellings of our MCP: Goose titles "landbridge: get session",
-        // MCP wire mcp__landbridge__get_session, dunder names landbridge__…,
-        // Codex ACP titles mcp.landbridge.<tool> (measured 2026-10-07).
+        // Harness spellings of our MCP: Goose titles "landbridge: get session"
+        // (a detail suffix stays "landbridge: … · …"), MCP wire
+        // mcp__landbridge__get_session, dunder names landbridge__…,
+        // OpenCode catalog keys landbridge_<tool> (every tool, not only the
+        // protocol list), Codex ACP titles mcp.landbridge.<tool>
+        // (measured 2026-10-07).
         // Prefix / namespace only — a shell title that merely mentions
         // "landbridge" in the command is not our MCP.
         if (s.StartsWith("landbridge:", StringComparison.OrdinalIgnoreCase)
             || s.StartsWith("landbridge__", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("landbridge_", StringComparison.OrdinalIgnoreCase)
             || s.Contains("mcp__landbridge__", StringComparison.OrdinalIgnoreCase)
             || s.Contains("mcp.landbridge.", StringComparison.OrdinalIgnoreCase))
             return true;
@@ -76,6 +80,10 @@ public static class PermissionPolicy
         "register_service", "open_forward", "open_preview", "open_lead_forward",
         "report_friction", "create_team",
         "mcp__landbridge__", "mcp.landbridge.",
+        // Grok calls every MCP tool through use_tool. The title is "use_tool"
+        // and the qualified name is only on tool_name (landbridge__<tool>),
+        // including Lead tools whose bare name is not a hint.
+        "landbridge__",
         "landbridge__get_inbox", "landbridge_get_inbox",
         "landbridge__get_session", "landbridge_get_session",
     ];
