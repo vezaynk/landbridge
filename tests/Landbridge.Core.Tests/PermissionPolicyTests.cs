@@ -26,6 +26,11 @@ public sealed class PermissionPolicyTests
     [InlineData("mcp__landbridge__create_team")]
     [InlineData("submit_plan")]
     [InlineData("mcp__landbridge__submit_plan")]
+    [InlineData("mcp.landbridge.request_input")]
+    [InlineData("mcp.landbridge.submit_plan")]
+    [InlineData("mcp.landbridge.start_process")]
+    [InlineData("mcp.landbridge.register_service")]
+    [InlineData("MCP.Landbridge.Submit_Plan")]
     public void Protocol_and_runtime_tools_auto_allow(string tool)
     {
         Assert.Equal(PermissionDisposition.AutoAllow, PermissionPolicy.Classify(tool, "{}"));
@@ -34,18 +39,21 @@ public sealed class PermissionPolicyTests
     [Theory]
     [InlineData("Execute `echo landbridge`")]
     [InlineData("Execute `cat landbridge-notes.md`")]
+    [InlineData("Execute `echo mcp.landbridge is not a tool`")]
     [InlineData("Bash")]
     public void A_shell_title_that_merely_mentions_landbridge_still_asks(string tool)
     {
         Assert.Equal(PermissionDisposition.Ask, PermissionPolicy.Classify(tool, "{}"));
     }
 
-    [Fact]
-    public void Input_that_names_a_protocol_tool_auto_allows()
+    [Theory]
+    [InlineData("tool", """{"name":"mcp__landbridge__get_inbox"}""")]
+    [InlineData("execute", """{"server":"landbridge","tool":"submit_plan","arguments":{"plan":"run pytest"}}""")]
+    [InlineData("tool", """{"server":"landbridge","tool":"start_process","arguments":{}}""")]
+    [InlineData("execute", """{"server":"landbridge","tool":"register_service","arguments":{}}""")]
+    public void Input_that_names_a_protocol_tool_auto_allows(string tool, string input)
     {
-        Assert.Equal(
-            PermissionDisposition.AutoAllow,
-            PermissionPolicy.Classify("tool", """{"name":"mcp__landbridge__get_inbox"}"""));
+        Assert.Equal(PermissionDisposition.AutoAllow, PermissionPolicy.Classify(tool, input));
     }
 
     [Theory]
