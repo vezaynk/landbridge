@@ -173,10 +173,11 @@ infrastructure cap (`InfrastructureRequeueLimit`, default 5, configurable via
 `Landbridge:InfrastructureRequeueLimit`, non-positive for uncapped) abandons the task as
 `canceled` — the plane giving up on placing the work, not a verdict on it — and every
 requeue records `LivenessLossReason` on the task row and its event row so the trail
-says which signal fired. Terminal states — `completed`, `rejected`,
-`canceled` — are final and never resumed. Leaving `working` clears the task's
-registered services and releases its relay forwards
-(`ClearServicesAndForwards`).
+says which signal fired. Derived terminal states — `completed`, `rejected`,
+`canceled` — are hidden rows and are not resumed by anything except
+`send_input_request`. Hiding the session clears its registered services and
+releases its relay forwards (`ClearServicesAndForwards`). Park and a failed
+attempt keep the advertisement.
 
 No transition requires reading a task description or interpreting its criteria —
 every guard is a field check, an identity check, a count, or a state check.
@@ -305,8 +306,8 @@ Both ends authenticate to the relay independently; neither authenticates to the
 other, so there is no peer key exchange and nothing to distribute. The grant is a
 **connection-establishment** credential, checked once when the tunnel opens (the
 relay calls the plane's `POST /relay/validate`); an established splice is never
-severed mid-flight by grant expiry — it persists until the owning task leaves
-`working`, and that bound is enforced rather than hoped for: the same
+severed mid-flight by grant expiry — it persists until the owning session is
+hidden, and that bound is enforced rather than hoped for: the same
 `ClearServicesAndForwards` effect that revokes the task's grants sends `close-forward`
 to both machines, because revoking a grant only stops the *next* open and a splice
 already running has nothing else that can end it. Only registered services are

@@ -359,13 +359,13 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
         // A live grant while the owner works…
         Assert.IsType<RelayGrantResult.Issued>(await grants.IssueForLeadAsync(team, "db"));
 
-        // …and nothing once it leaves working: ClearServicesAndForwards took the
-        // registration and the live grants with it (§6, §9 check 11).
+        // A failed attempt keeps the row, but a new grant still requires a seated
+        // holder (§9 check 11).
         await new SessionStore(db, clock).ApplyAsync(
             producerTask, new LivenessLost(LivenessLossReason.LivenessTimeout));
 
         var refused = Assert.IsType<RelayGrantResult.Refused>(await grants.IssueForLeadAsync(team, "db"));
         Assert.Equal(Rule.ForwardsRequireRegistration, refused.Rule);
-        Assert.Contains("no service 'db'", refused.Reason);
+        Assert.Contains("no longer working", refused.Reason);
     }
 }

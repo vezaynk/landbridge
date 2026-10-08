@@ -85,9 +85,10 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         // §5/§11: the predecessor worker-instance token is revoked before any resume.
         Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
 
-        // Services are cleared on the park itself (a question no longer tears them
-        // down — the session stays). A parked task has none.
-        Assert.Empty(await v.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
+        // Park keeps the advertisement. Hiding the session is what drops it.
+        var kept = await v.RegisteredServices.AsNoTracking().SingleAsync(s => s.SessionId == id.Value);
+        Assert.Equal("api", kept.Name);
+        Assert.Equal(5001, kept.Port);
 
         // The old dispatch is untracked so a later wake/redispatch starts clean.
         Assert.Empty(registry.SessionsOn(machine));

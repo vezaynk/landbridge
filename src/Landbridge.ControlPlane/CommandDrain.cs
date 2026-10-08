@@ -152,6 +152,9 @@ public sealed class CommandDrain(
             CommandRow.RegisterService => await store.RegisterServiceAsync(
                 new WorkerCaller(team, session, new WorkerInstanceId(payload.InstanceId ?? Guid.Empty)),
                 payload.Name ?? "", payload.Port ?? 0, ct),
+            CommandRow.UnregisterService => await store.UnregisterServiceAsync(
+                new WorkerCaller(team, session, new WorkerInstanceId(payload.InstanceId ?? Guid.Empty)),
+                payload.Name ?? "", ct),
             CommandRow.PullReceipt => await store.ApplyAsync(
                 session,
                 new PullReceipt(new WorkerCaller(

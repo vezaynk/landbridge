@@ -42,9 +42,9 @@ namespace Landbridge.Mcp.Tests;
 /// (the relay is cross-machine, and one <see cref="RelayForwarder"/> dedups a
 /// forward id) by dispatching them one at a time with only the intended machine ready.</para>
 ///
-/// <para>Finally, killing the producer's worker and driving the plane's liveness
-/// loss shows the bookkeeping: leaving <c>working</c> fires
-/// <c>ClearServicesAndForwards</c>, so the service row is gone.</para>
+/// <para>Finally the Lead accepts, which hides the session and fires
+/// <c>ClearServicesAndForwards</c>, so the service row is gone and the held
+/// splice closes. A report before that keeps both.</para>
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLifetime
@@ -119,7 +119,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             {
                 DispatchCommand d => Spawn(supervisor, d, profile, mpWire.ToString()),
                 // Both halves of a forward's life go to the daemon: open-forward stands the
-                // data plane up, close-forward ends it when the owning task leaves working.
+                // data plane up, close-forward ends it when the owning session is hidden.
                 OpenForwardCommand or CloseForwardCommand => producerDaemon.Send(command, sendCt),
                 _ => Task.CompletedTask,
             });
@@ -172,7 +172,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             Assert.StartsWith("relay-echo:ok:", reference);
 
             // ── §8.3's second bound, through the whole real stack: "an established
-            //    splice persists UNTIL the owning task leaves working."
+            //    splice persists until the owning session is hidden."
             //
             //    The consumer end above belonged to a worker that has since exited, so the
             //    test takes one for itself: a real grant, both real landbridged ends armed by the

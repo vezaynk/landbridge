@@ -446,9 +446,11 @@ public sealed class WorkerTools(
     [McpServerTool(Name = "register_service"),
      Description("Advertise a live endpoint to other sessions in your Team. Bind the port first, " +
                  "then register — an entry pointing at a port you failed to bind sends consumers " +
-                 "into the wrong process. One live registration per name in your Team: " +
-                 "registering a name you already hold updates its port, and a name another session " +
-                 "holds is refused, so pick a more specific one rather than retrying.")]
+                 "into the wrong process. One name per Team: registering a name you already hold " +
+                 "updates its port. A name another session currently has seated is refused — pick " +
+                 "another name, or raise it with your Lead. A name whose holder is parked, failed, " +
+                 "or between dispatches is taken over. The advertisement stays until you call " +
+                 "unregister_service or the session is closed. Park and a failed attempt do not drop it.")]
     public async Task<string> RegisterService(
         [Description("A name other sessions will use to find this service.")] string name,
         [Description("The loopback port you have already bound.")] int port,
@@ -462,6 +464,24 @@ public sealed class WorkerTools(
                 new CoreSessionBody("", Name: name, Port: port), ct) is { } viaCore)
             return viaCore.Describe();
         return Describe(await store.RegisterServiceAsync(caller, name, port, ct));
+    }
+
+    [McpServerTool(Name = "unregister_service"),
+     Description("Drop a service name this session advertised. The listener is not stopped — " +
+                 "stop_process does that, when you started it. The name becomes free for the Team. " +
+                 "Only the seated incumbent of this session can drop its own name.")]
+    public async Task<string> UnregisterService(
+        [Description("The name you registered with register_service.")] string name,
+        CancellationToken ct)
+    {
+        var caller = Caller;
+        if (await QueueWaitAsync(CommandRow.UnregisterService,
+                new CommandPayload(Name: name), ct) is { } queued)
+            return queued.Describe();
+        if (await CorePostAsync($"/core/v1/sessions/{caller.Session.Value:D}/services/unregister",
+                new CoreSessionBody("", Name: name), ct) is { } viaCore)
+            return viaCore.Describe();
+        return Describe(await store.UnregisterServiceAsync(caller, name, ct));
     }
 
     [McpServerTool(Name = "open_forward"),

@@ -57,7 +57,7 @@ public static class PermissionPolicy
         return n is "get_inbox" or "watch_inbox" or "get_session"
             or "report_result" or "request_input" or "submit_plan"
             or "start_process" or "stop_process" or "list_processes" or "write_process"
-            or "register_service" or "open_forward" or "open_preview"
+            or "register_service" or "unregister_service" or "open_forward" or "open_preview"
             or "open_lead_forward" or "report_friction" or "create_team";
     }
 
@@ -77,7 +77,7 @@ public static class PermissionPolicy
     [
         "get_inbox", "watch_inbox", "get_session", "report_result", "request_input",
         "submit_plan", "start_process", "stop_process", "list_processes", "write_process",
-        "register_service", "open_forward", "open_preview", "open_lead_forward",
+        "register_service", "unregister_service", "open_forward", "open_preview", "open_lead_forward",
         "report_friction", "create_team",
         "mcp__landbridge__", "mcp.landbridge.",
         // Grok calls every MCP tool through use_tool. The title is "use_tool"

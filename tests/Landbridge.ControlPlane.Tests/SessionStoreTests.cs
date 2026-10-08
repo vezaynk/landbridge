@@ -783,6 +783,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         var rejected = Assert.IsType<StoreResult.Rejected>(
             await store.RegisterServiceAsync(secondCaller, "api", 5002));
         Assert.Equal(Rule.ServiceNameUniqueInTeam, rejected.Rule);
+        Assert.Contains("another working task", rejected.Reason);
 
         await using var verify = pg.NewContext();
         var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api");
@@ -797,6 +798,88 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(secondCaller, "api", 5002));
         Assert.Equal(second.Value,
             (await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api")).SessionId);
+    }
+
+    [SkippableFact]
+    public async Task Park_keeps_a_registration_and_stop_clears_it()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(
+            new WorkerCaller(Team, id, instance), "api", 5001));
+
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            id, new Park(Lead, new ParkRecord(TestMachineIds.For("m1")))));
+
+        await using var parked = pg.NewContext();
+        var kept = await parked.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api");
+        Assert.Equal(id.Value, kept.SessionId);
+        Assert.Equal(5001, kept.Port);
+
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new StopSession(Lead)));
+        await using var closed = pg.NewContext();
+        Assert.Empty(await closed.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
+    }
+
+    [SkippableFact]
+    public async Task A_seated_task_takes_over_a_name_whose_holder_is_no_longer_seated()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var store = new SessionStore(db, clock);
+        var first = await CreateSubmitted(db);
+        var firstInstance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), firstInstance);
+        var firstCaller = new WorkerCaller(Team, first, firstInstance);
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(firstCaller, "api", 5001));
+
+        var grants = new RelayGrantService(db, clock);
+        var issued = Assert.IsType<RelayGrantResult.Issued>(
+            await grants.IssueAsync(new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New()), "api"));
+        var mint = await new PreviewMappingService(db, clock)
+            .CreateAsync(Team, first, "api", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(5));
+
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            first, new LivenessLost(LivenessLossReason.ProcessExited)));
+
+        var second = await CreateSubmitted(db);
+        var secondInstance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), secondInstance);
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(
+            new WorkerCaller(Team, second, secondInstance), "api", 5002));
+
+        await using var verify = pg.NewContext();
+        var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api");
+        Assert.Equal(second.Value, svc.SessionId);
+        Assert.Equal(5002, svc.Port);
+        Assert.True((await verify.RelayGrants.AsNoTracking().SingleAsync(g => g.ForwardId == issued.ForwardId)).Revoked);
+        Assert.Empty(await verify.PreviewMappings.AsNoTracking().Where(p => p.Id == mint.Mapping.Id).ToListAsync());
+    }
+
+    [SkippableFact]
+    public async Task The_seated_incumbent_unregisters_its_own_name()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        var caller = new WorkerCaller(Team, id, instance);
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5001));
+
+        var zombie = Assert.IsType<StoreResult.Rejected>(
+            await store.UnregisterServiceAsync(new WorkerCaller(Team, id, WorkerInstanceId.New()), "api"));
+        Assert.Equal(Rule.IncumbentInstanceOnly, zombie.Rule);
+
+        Assert.IsType<StoreResult.Applied>(await store.UnregisterServiceAsync(caller, "api"));
+        await using var verify = pg.NewContext();
+        Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
     }
 
     [SkippableFact]

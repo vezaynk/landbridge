@@ -21,16 +21,15 @@ namespace Landbridge.ControlPlane.Auth;
 /// <para>Revocation is not this service's job — it rides the existing
 /// <see cref="ClearServicesAndForwards"/> effect in <see cref="SessionStore"/>,
 /// which revokes a task's live grants next to where it already clears that task's
-/// registered services (§6). That effect fires on leaving <c>working</c> in every case
-/// but one: a producer blocked on a <b>permission</b> request is still alive inside its
-/// tool call and emits nothing (§11), so its grants remain live — through a later park or
-/// requeue too. Expiry is what bounds a grant there.</para>
+/// registered services (§8.2). That effect fires when the session becomes hidden.
+/// Park, a failed attempt, and a live permission or plan wait keep the grants.
+/// Expiry still bounds a grant that outlives its splice.</para>
 ///
 /// <para>Revoking bounds only the <em>next</em> open. Ending the splices already running is
 /// the same effect's other arm — <c>close-forward</c> to both machines
 /// (<see cref="Landbridge.ControlPlane.ForwardTeardownService"/>) — because §8.3 bounds an
-/// established splice by its owning task's <c>working</c> state, and no row can enforce
-/// that.</para>
+/// established splice until the owning session is hidden, the name is unregistered,
+/// or a seated session takes that stale name over, and no row can enforce that.</para>
 ///
 /// <para>The mint is also where §9 check 10's <b>forward rate limit</b> is enforced, since a
 /// grant is the one thing no forward can happen without and the plane is the only place the
@@ -170,12 +169,10 @@ public sealed class RelayGrantService(
             return new RelayGrantResult.Refused(Rule.ForwardsRequireRegistration,
                 $"no service '{serviceName}' is registered in your Team");
 
-        // Owned by a live producer? (§9 check 11.) Working, or blocked on a
-        // permission request: that worker is still inside its tool call, still
-        // the incumbent, and ClearServicesAndForwards does not fire (§11). A
-        // registered row for a submitted/parked/failed task is the defensive
-        // case this check exists for — the store refuses to register there, so
-        // we only see one if a test (or a future bug) wrote it directly.
+        // Owned by a seated producer? (§9 check 11.) Working, or blocked inside
+        // a live tool call. A registration survives park and a failed attempt
+        // (§8.2), but a new grant still requires the holder to be seated — a
+        // parked or failed row is the case this check refuses.
         // Grab the producer task id AND the service's loopback port in one read:
         // both ride the Issued result so the plane can send the producer end its
         // dial target without re-querying (§8.3).

@@ -47,7 +47,7 @@ public class LifecycleTests
         Assert.Null(next.CurrentInstance);
         var effects = Expect.Effects(result);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
     }
 
     [Fact]
@@ -102,7 +102,7 @@ public class LifecycleTests
         Assert.Null(next.CurrentInstance);
         var effects = Expect.Effects(result);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
     }
 
     [Fact]
@@ -117,7 +117,7 @@ public class LifecycleTests
         Assert.Equal(Given.Park, next.Park);
         var effects = Expect.Effects(result);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
     }
 
     [Fact]
@@ -133,11 +133,11 @@ public class LifecycleTests
     public void Stop_closes_an_idle_working_session()
     {
         var task = Given.Session(SessionState.Working);
-        var next = Expect.Transitioned(
-            SessionStateMachine.Apply(task, new StopSession(Given.Lead)),
-            SessionState.Completed);
+        var result = SessionStateMachine.Apply(task, new StopSession(Given.Lead));
+        var next = Expect.Transitioned(result, SessionState.Completed);
         Assert.Null(next.MessageVerdict);
         Assert.True(next.Hidden);
+        Assert.Contains(new ClearServicesAndForwards(), Expect.Effects(result));
     }
 
     [Fact]
@@ -207,7 +207,7 @@ public class LifecycleTests
         var effects = Expect.Effects(result);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
     }
 
     [Theory]
@@ -253,7 +253,7 @@ public class LifecycleTests
         var effects = Expect.Effects(result);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
     }
 
     [Fact]
@@ -294,12 +294,12 @@ public class LifecycleTests
         Assert.Equal(Given.Park, next.Park);
         var effects = Expect.Effects(result);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
     }
 
     [Fact]
-    public void Park_from_blocked_on_input_clears_services()
+    public void Park_from_blocked_on_input_keeps_services()
     {
         // Permission waits cannot be deactivated; a prose wait can.
         var task = Given.Session(SessionState.Working, message: MessageState.AwaitingLead);
@@ -312,7 +312,7 @@ public class LifecycleTests
         var effects = Expect.Effects(result);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
     }
 
     [Fact]
@@ -327,7 +327,7 @@ public class LifecycleTests
         Assert.Equal(Given.Park, next.Park);
         var effects = Expect.Effects(result);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
     }
 

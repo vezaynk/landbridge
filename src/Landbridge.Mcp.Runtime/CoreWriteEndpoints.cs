@@ -38,6 +38,7 @@ public static class CoreWriteEndpoints
         g.MapPost("/sessions/{id}/inbox", PullInboxAsync);
         g.MapPost("/sessions/{id}/ask", AskAsync);
         g.MapPost("/sessions/{id}/services", RegisterServiceAsync);
+        g.MapPost("/sessions/{id}/services/unregister", UnregisterServiceForWorkerAsync);
         g.MapPost("/sessions/{id}/register-service", RegisterServiceFromDashboardAsync);
         g.MapPost("/sessions/{id}/unregister-service", UnregisterServiceAsync);
         g.MapPost("/bind-machine", BindMachineAsync);
@@ -485,6 +486,22 @@ public static class CoreWriteEndpoints
                     InstanceId: worker.Caller.Instance.Value), ct) is { } accepted)
             return accepted;
         return Store(await store.RegisterServiceAsync(worker.Caller!, body.Name, body.Port.Value, ct));
+    }
+
+    private static async Task<IResult> UnregisterServiceForWorkerAsync(
+        HttpContext http, string id, CoreSessionBody body, SessionStore store, CancellationToken ct)
+    {
+        var worker = Worker(http);
+        if (worker.Error is { } err)
+            return err;
+        if (string.IsNullOrWhiteSpace(body.Name))
+            return Results.Json(new CoreStoreReply("rejected", Reason: "name required"), CoreWriteClient.Json);
+        if (await AcceptIfPreferredAsync(
+                http, CommandRow.WorkerActor, worker.Caller!.Session.Value, worker.Caller.Team.Value,
+                worker.Caller.Session.Value, CommandRow.UnregisterService,
+                new CommandPayload(Name: body.Name, InstanceId: worker.Caller.Instance.Value), ct) is { } accepted)
+            return accepted;
+        return Store(await store.UnregisterServiceAsync(worker.Caller!, body.Name, ct));
     }
 
     private static async Task<IResult> RegisterServiceFromDashboardAsync(
