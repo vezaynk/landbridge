@@ -79,16 +79,17 @@ public class InstanceFencingAndParkTests
     }
 
     [Fact]
-    public void Requeue_from_blocked_on_input_uses_the_infrastructure_counter_and_releases_services()
+    public void Requeue_from_blocked_on_input_uses_the_infrastructure_counter_and_keeps_services()
     {
-        // A permission wait keeps the process and its services. Infra death releases both.
+        // A permission wait keeps the process and its services. A failed attempt
+        // keeps the advertisement too; hiding the session is what releases it.
         var task = Given.Session(SessionState.BlockedOnInput);
 
         var result = SessionStateMachine.Apply(task, new LivenessLost(LivenessLossReason.MachineReboot));
 
         var next = Expect.Transitioned(result, SessionState.Failed);
         Assert.Equal(1, next.InfrastructureRequeues);
-        Assert.Contains(new ClearServicesAndForwards(), Expect.Effects(result));
+        Assert.DoesNotContain(Expect.Effects(result), e => e is ClearServicesAndForwards);
     }
 
     [Fact]

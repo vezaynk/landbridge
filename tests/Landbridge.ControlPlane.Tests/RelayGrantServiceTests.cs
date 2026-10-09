@@ -259,7 +259,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Leaving_working_revokes_the_producers_live_grants()
+    public async Task Closing_the_session_revokes_the_producers_live_grants()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
@@ -278,9 +278,13 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
 
-        // The producer leaves working: ClearServicesAndForwards clears its
-        // registered services AND revokes its live grants (§6/§8.3), one atomic step.
+        // Hiding the session clears its registered services and revokes its live
+        // grants (§8.2). A failed attempt keeps both.
         await store.ApplyAsync(created.Session.Id, new LivenessLost(LivenessLossReason.LivenessTimeout));
+        Assert.Single(await db.RegisteredServices.AsNoTracking().Where(s => s.SessionId == created.Session.Id.Value).ToListAsync());
+        Assert.False((await db.RelayGrants.AsNoTracking().SingleAsync(g => g.ForwardId == issued.ForwardId)).Revoked);
+
+        await store.ApplyAsync(created.Session.Id, new StopSession(LeadFor(Team)));
 
         await using var verify = pg.NewContext();
         Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == created.Session.Id.Value).ToListAsync());

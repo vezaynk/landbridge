@@ -400,20 +400,15 @@ public sealed class WorkerInstanceRow
 }
 
 /// <summary>
-/// A registered live endpoint (§8.2). Rows for a task are cleared when it
-/// leaves <see cref="SessionState.Working"/> (the ClearServicesAndForwards
-/// effect) — with one exception: a task blocked on a <b>permission</b> request
-/// keeps its registrations, because that worker is still alive inside its tool
-/// call and returns to <see cref="SessionState.Working"/> as the same incumbent
-/// (§11 permission bridge). It keeps them through a subsequent park or requeue
-/// too, since the clearing effect is only ever emitted from
-/// <see cref="SessionState.Working"/>.
+/// A registered endpoint (§8.2). The row stays until the session is hidden
+/// (<see cref="ClearServicesAndForwards"/>), the worker calls
+/// <c>unregister_service</c>, or a seated session takes a name whose holder
+/// is no longer seated. Park and a failed attempt do not delete it.
 ///
 /// <para><c>(TeamId, Name)</c> is <b>unique</b>: the name is the Team-scoped address every
-/// resolver is handed, so one live row may hold it (<see cref="Rule.ServiceNameUniqueInTeam"/>,
-/// enforced by the index and by <c>SessionStore.RegisterServiceAsync</c>, which updates a task's
-/// own row and refuses another task's). Since a row exists only while its task is working, a
-/// finished task's name is free for the next one.</para>
+/// resolver is handed, so one row may hold it (<see cref="Rule.ServiceNameUniqueInTeam"/>,
+/// enforced by the index and by <c>SessionStore.RegisterServiceAsync</c>, which updates a
+/// task's own row, refuses another seated task's, and takes over a stale one).</para>
 /// </summary>
 public sealed class RegisteredServiceRow
 {

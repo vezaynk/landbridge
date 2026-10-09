@@ -50,7 +50,7 @@ public class RequeueCapTests
 
         var effects = Expect.Effects(result);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
         Assert.DoesNotContain(new DiscardWorkspace(), effects);
     }
 
@@ -94,6 +94,6 @@ public class RequeueCapTests
         Assert.Equal(LivenessLossReason.MachineReboot, next.LastRequeueReason);
         var effects = Expect.Effects(result);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
-        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
     }
 }

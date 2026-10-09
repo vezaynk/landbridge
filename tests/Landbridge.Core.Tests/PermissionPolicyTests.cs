@@ -30,6 +30,7 @@ public sealed class PermissionPolicyTests
     [InlineData("mcp.landbridge.submit_plan")]
     [InlineData("mcp.landbridge.start_process")]
     [InlineData("mcp.landbridge.register_service")]
+    [InlineData("mcp.landbridge.unregister_service")]
     [InlineData("MCP.Landbridge.Submit_Plan")]
     [InlineData("landbridge_get_lead_inbox")]
     [InlineData("landbridge_watch_lead_inbox")]

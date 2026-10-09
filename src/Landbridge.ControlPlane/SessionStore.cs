@@ -670,12 +670,14 @@ public sealed class SessionStore(
     ///   fresh port, or a re-register after a bind retry — <b>updates</b> the row it already
     ///   owns. The worker is correcting its own advertisement, and its old port is by then
     ///   exactly the stale target §8.2's dial hazard is about.</item>
-    ///   <item><b>Another task in the Team claiming a name that is live</b> is
-    ///   <b>refused</b>. Silently taking it over would redirect the holder's consumers
-    ///   mid-flight, and silently ignoring it would leave the second worker believing it had
-    ///   advertised something. Refusing tells it the name is taken so it can pick another.
-    ///   The row it collides with is always live: registrations are deleted when their task
-    ///   leaves <c>working</c>, so a finished task's name is free again.</item>
+    ///   <item><b>Another task whose holder is seated</b> — visible, healthy, and
+    ///   its incumbent instance is not revoked — is <b>refused</b>. Taking it would
+    ///   redirect that task's consumers mid-flight.</item>
+    ///   <item><b>A name whose holder is not seated</b> (parked, failed, between
+    ///   dispatches, or its instance revoked) is <b>taken over</b>: the row is
+    ///   repointed at the caller, and the previous holder's grants and previews
+    ///   for that name are released. A hidden session has already dropped its
+    ///   rows, so its name is free without a takeover.</item>
     /// </list>
     /// <para>The unique index on <c>(team_id, name)</c> is what makes this an invariant
     /// rather than a check — two concurrent registrations of one name cannot both land, and
@@ -698,9 +700,13 @@ public sealed class SessionStore(
         var existing = await db.RegisteredServices
             .FirstOrDefaultAsync(s => s.TeamId == caller.Team.Value && s.Name == name, ct);
         if (existing is not null && existing.SessionId != caller.Session.Value)
-            return new StoreResult.Rejected(Rule.ServiceNameUniqueInTeam,
-                $"service '{name}' is already registered in your Team by another task; " +
-                "pick a name nothing else holds");
+        {
+            if (await HolderIsSeatedAsync(existing.SessionId, ct))
+                return new StoreResult.Rejected(Rule.ServiceNameUniqueInTeam,
+                    $"service '{name}' is registered by another working task in your Team — " +
+                    "use another name or port. If you didn't expect this collision, raise it with your Lead.");
+            return await TakeOverServiceAsync(caller, existing, name, port, ct);
+        }
 
         if (existing is not null)
         {
@@ -761,8 +767,34 @@ public sealed class SessionStore(
     }
 
     /// <summary>
+    /// Worker path: the seated incumbent drops one name it advertised. Does not
+    /// stop the listener. A zombie instance is refused, and another session's
+    /// name is not this caller's to drop.
+    /// </summary>
+    public async Task<StoreResult> UnregisterServiceAsync(
+        WorkerCaller caller, string name, CancellationToken ct = default)
+    {
+        name = name.Trim();
+        if (string.IsNullOrEmpty(name))
+            return new StoreResult.Rejected(Rule.InvalidSourceState,
+                "unregister_service needs the service name");
+
+        var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Session.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {caller.Session}");
+        if (row.OccupancyObserved != Occupancy.Running && row.CurrentInstanceId is null)
+            return new StoreResult.Rejected(Rule.InvalidSourceState,
+                $"services unregister only while a live attempt is seated, not {row.OccupancyObserved}");
+        if (row.TeamId != caller.Team.Value || row.CurrentInstanceId != caller.Instance.Value)
+            return new StoreResult.Rejected(Rule.IncumbentInstanceOnly,
+                "only the incumbent worker of this task may unregister a service");
+        return await UnregisterServiceAsync(caller.Session, name, ct);
+    }
+
+    /// <summary>
     /// Drop one registered service on this session, revoke its grants, and close
-    /// live splices. Previews of that name go with it.
+    /// live splices. Previews of that name go with it. The dashboard path: an
+    /// operator may drop a name with no seated worker.
     /// </summary>
     public async Task<StoreResult> UnregisterServiceAsync(
         SessionId session, string name, CancellationToken ct = default)
@@ -781,39 +813,114 @@ public sealed class SessionStore(
             return new StoreResult.NotFound($"no service '{name}' on {session}");
         }
 
+        var teardown = await ReleaseAdvertisementAsync(session.Value, name, ct);
+        HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, session.Value);
+        await db.SaveChangesAsync(ct);
+        await HubOutbox.NotifyAsync(db, session.Value, ct);
+        await tx.CommitAsync(ct);
+        await CloseForwardsAsync(session, teardown, ct);
+
+        return new StoreResult.Applied(row.ToDomain(), []);
+    }
+
+    /// <summary>
+    /// A holder is seated while it still has a live incumbent: visible, healthy,
+    /// instance set, and that instance not revoked. Observed occupancy can lag
+    /// the dispatch, so it is not the signal. Park, a failed attempt, and the
+    /// gap before the next dispatch clear the instance and are not seated.
+    /// </summary>
+    private async Task<bool> HolderIsSeatedAsync(Guid sessionId, CancellationToken ct)
+    {
+        var holder = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == sessionId, ct);
+        if (holder is null || holder.Hidden || holder.Health != SessionHealth.Ok
+            || holder.CurrentInstanceId is null)
+            return false;
+        return !await db.WorkerInstances.AsNoTracking()
+            .AnyAsync(w => w.Id == holder.CurrentInstanceId && w.Revoked, ct);
+    }
+
+    /// <summary>
+    /// Repoint a stale <c>(team, name)</c> row at <paramref name="caller"/> and
+    /// release the previous holder's grants and previews for that name.
+    /// </summary>
+    private async Task<StoreResult> TakeOverServiceAsync(
+        WorkerCaller caller, RegisteredServiceRow existing, string name, int port, CancellationToken ct)
+    {
+        var oldSession = existing.SessionId;
+        var seq = existing.Seq;
+        // The row was tracked for the own-name update. Detach it so the
+        // set-based takeover is not written back as the old session.
+        db.Entry(existing).State = EntityState.Detached;
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var moved = await db.RegisteredServices
+            .Where(s => s.Seq == seq && s.SessionId == oldSession)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(s => s.SessionId, caller.Session.Value)
+                .SetProperty(s => s.Port, port)
+                .SetProperty(s => s.CreatedAt, clock.GetUtcNow()), ct);
+        if (moved == 0)
+        {
+            await tx.CommitAsync(ct);
+            return new StoreResult.Rejected(Rule.ServiceNameUniqueInTeam,
+                $"service '{name}' was registered by another task in your Team just now; " +
+                "pick a name nothing else holds");
+        }
+
+        var teardown = await ReleaseAdvertisementAsync(oldSession, name, ct);
+        HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, oldSession);
+        HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, caller.Session.Value);
+        await db.SaveChangesAsync(ct);
+        await HubOutbox.NotifyAsync(db, caller.Session.Value, ct);
+        await HubOutbox.NotifyAsync(db, oldSession, ct);
+        await tx.CommitAsync(ct);
+        await CloseForwardsAsync(new SessionId(oldSession), teardown, ct);
+
+        var row = await db.Sessions.AsNoTracking().FirstAsync(t => t.Id == caller.Session.Value, ct);
+        return new StoreResult.Applied(row.ToDomain(), []);
+    }
+
+    /// <summary>
+    /// Revoke live grants and delete previews for one <c>(session, name)</c>,
+    /// staging the hub rows. The service row itself is the caller's to delete
+    /// or repoint. Runs inside the caller's transaction.
+    /// </summary>
+    private async Task<List<(Guid ForwardId, Guid? ConsumerSessionId)>> ReleaseAdvertisementAsync(
+        Guid sessionId, string name, CancellationToken ct)
+    {
         var teardown = await db.RelayGrants
-            .Where(g => g.ProducerSessionId == session.Value && g.ServiceName == name && !g.Revoked)
+            .Where(g => g.ProducerSessionId == sessionId && g.ServiceName == name && !g.Revoked)
             .Select(g => new { g.ForwardId, g.ConsumerSessionId })
             .ToListAsync(ct);
         var previewIds = await db.PreviewMappings
-            .Where(p => p.SessionId == session.Value && p.ServiceName == name)
+            .Where(p => p.SessionId == sessionId && p.ServiceName == name)
             .Select(p => p.Id)
             .ToListAsync(ct);
         await db.RelayGrants
-            .Where(g => g.ProducerSessionId == session.Value && g.ServiceName == name && !g.Revoked)
+            .Where(g => g.ProducerSessionId == sessionId && g.ServiceName == name && !g.Revoked)
             .ExecuteUpdateAsync(s => s.SetProperty(g => g.Revoked, true), ct);
         await db.PreviewMappings
-            .Where(p => p.SessionId == session.Value && p.ServiceName == name)
+            .Where(p => p.SessionId == sessionId && p.ServiceName == name)
             .ExecuteDeleteAsync(ct);
-        HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, session.Value);
         foreach (var g in teardown)
             HubOutbox.Stage(db, clock, HubQueueRow.ForwardsTopic, g.ForwardId);
         foreach (var previewId in previewIds)
             HubOutbox.Stage(db, clock, HubQueueRow.PreviewsTopic, previewId);
-        await db.SaveChangesAsync(ct);
-        await HubOutbox.NotifyAsync(db, session.Value, ct);
-        await tx.CommitAsync(ct);
+        return teardown.Select(g => (g.ForwardId, g.ConsumerSessionId)).ToList();
+    }
 
-        if (forwards is not null && teardown.Count > 0)
-        {
-            await forwards.CloseAsync(
-                teardown.Select(g => new ForwardTeardown(
-                    session, g.ForwardId.ToString(),
-                    g.ConsumerSessionId is { } consumer ? new SessionId(consumer) : null)).ToList(),
-                ct);
-        }
-
-        return new StoreResult.Applied(row.ToDomain(), []);
+    private async Task CloseForwardsAsync(
+        SessionId producer,
+        List<(Guid ForwardId, Guid? ConsumerSessionId)> teardown,
+        CancellationToken ct)
+    {
+        if (forwards is null || teardown.Count == 0)
+            return;
+        await forwards.CloseAsync(
+            teardown.Select(g => new ForwardTeardown(
+                producer, g.ForwardId.ToString(),
+                g.ConsumerSessionId is { } consumer ? new SessionId(consumer) : null)).ToList(),
+            ct);
     }
 
     /// <summary>
@@ -1835,7 +1942,7 @@ public sealed class SessionStore(
                 case ClearServicesAndForwards:
                     db.RegisteredServices.Where(s => s.SessionId == row.Id).ExecuteDelete();
                     HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, row.Id);
-                    // §8.3: leaving working also releases the task's relay forwards, and
+                    // §8.3: hiding the session releases its relay forwards, and
                     // that takes both halves. Read the live ones FIRST — the revoke below
                     // is what makes them stop being live — so the post-commit close knows
                     // which forwards and which two ends to tell (ForwardTeardownService).

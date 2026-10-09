@@ -666,7 +666,7 @@ public sealed class LeadTools(
     [McpServerTool(Name = "unbind_machine"),
      Description("Release your human's machine binding (spec §8.3). Do this when they move to a different " +
                  "machine, or when the machine should no longer be a forward target. Already-established " +
-                 "forwards are not severed — a splice lives until its owning session leaves working — but no " +
+                 "forwards are not severed — a splice lives until its owning session is closed — but no " +
                  "new open_lead_forward will resolve until a machine is bound again.")]
     public async Task<string> UnbindMachine(
         [Description("A Team this Lead owns. From create_team, or a human-supplied id.")]

@@ -26,26 +26,22 @@ public enum RelayGrantRole
 /// its tunnel once and the producer opens its tunnel once, so each side has its
 /// own "used" stamp and a replay of either side is refused.</para>
 ///
-/// <para>An issued grant is revoked when the owning (producer) task leaves
-/// <c>working</c> — the same <see cref="ClearServicesAndForwards"/> effect that
-/// clears the task's registered services (§6). Expiry gates only tunnel-open; an
-/// established splice persists past it (§8.3), which holds trivially because a
-/// grant is validated only at open.</para>
+/// <para>An issued grant is revoked when the owning session is hidden — the same
+/// <see cref="ClearServicesAndForwards"/> effect that clears its registered
+/// services (§8.2) — or when that one name is unregistered or taken over.
+/// Expiry gates only tunnel-open; an established splice persists past it (§8.3),
+/// which holds trivially because a grant is validated only at open.</para>
 ///
-/// <para><b>Revocation is therefore only half of leaving <c>working</c>, and the other
-/// half is not a row.</b> Nothing here can end a splice that is already running — that is
-/// what §8.3's "until the owning task leaves working" needs, and it takes a command to the
-/// two machines holding the sockets (<c>close-forward</c>,
-/// <see cref="Landbridge.ControlPlane.ForwardTeardownService"/>), issued from the same effect.
-/// Read a revoked row as "no further tunnel may open on this", never as "the tunnel that
-/// did open is gone".</para>
+/// <para><b>Revocation is therefore only half of closing the session, and the other
+/// half is not a row.</b> Nothing here can end a splice that is already running. That
+/// takes a command to the two machines holding the sockets (<c>close-forward</c>,
+/// <see cref="Landbridge.ControlPlane.ForwardTeardownService"/>), issued from the same
+/// effect. Read a revoked row as "no further tunnel may open on this", never as "the
+/// tunnel that did open is gone".</para>
 ///
-/// <para><b>One exception, and it matters here more than anywhere.</b> A producer
-/// blocked on a <b>permission</b> request (§11 permission bridge) does not emit that
-/// effect — it is still alive inside its tool call — so its grants stay live, and they
-/// stay live through a subsequent park or requeue as well, because the effect is only
-/// emitted from <c>working</c>. A grant outliving its producer's <c>working</c> state is
-/// therefore possible; expiry, not revocation, is what bounds it in that case.</para>
+/// <para>Park, a failed attempt, and a live permission or plan wait do not emit
+/// that effect, so a grant can outlive the producer's seated turn. Expiry, not
+/// revocation, bounds it then.</para>
 /// </summary>
 public sealed class RelayGrantRow
 {
@@ -85,8 +81,8 @@ public sealed class RelayGrantRow
     /// <summary>Set the first time the producer end opens its tunnel; a second producer open is refused.</summary>
     public DateTimeOffset? UsedByProducerAt { get; set; }
 
-    /// <summary>Revoked when the producer task leaves working (ClearServicesAndForwards, §6/§8.3),
-    /// except where a permission block keeps that effect from firing — see the type remarks.</summary>
+    /// <summary>Revoked when the producer session is hidden, or when this name is
+    /// unregistered or taken over. Park and a failed attempt leave it — see the type remarks.</summary>
     public bool Revoked { get; set; }
 
     /// <summary>

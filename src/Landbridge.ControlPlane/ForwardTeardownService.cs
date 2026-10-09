@@ -5,8 +5,8 @@ using Microsoft.Extensions.Logging;
 namespace Landbridge.ControlPlane;
 
 /// <summary>
-/// One live forward a leaving-<c>working</c> task is taking with it (§8.3), as read off
-/// its unrevoked grants at the moment <c>ClearServicesAndForwards</c> fires.
+/// One live forward a closing session, an unregister, or a stale-name takeover
+/// is taking with it (§8.3), as read off its unrevoked grants at that moment.
 /// </summary>
 /// <param name="Producer">
 /// The task whose registered service this forward reaches — the one leaving
@@ -25,11 +25,10 @@ namespace Landbridge.ControlPlane;
 public readonly record struct ForwardTeardown(SessionId Producer, string ForwardId, SessionId? Consumer);
 
 /// <summary>
-/// Tells the machines holding a task's relay forwards to close them, at the moment the
-/// task leaves <c>working</c> (spec §8.3: "an established splice persists <b>until the
-/// owning task leaves <c>working</c></b>"). Driven from <see cref="SessionStore"/>'s
-/// <c>ClearServicesAndForwards</c> effect, alongside the service-row delete and the grant
-/// revoke that were already there.
+/// Tells the machines holding a task's relay forwards to close them when the
+/// session is hidden, a name is unregistered, or a seated session takes a stale
+/// name (spec §8.2). Driven from <see cref="SessionStore"/>, alongside the
+/// service-row delete or repoint and the grant revoke.
 ///
 /// <para><b>Why the revoke was not enough.</b> A grant gates <em>open</em> and nothing
 /// else — revoking it stops the next tunnel and says nothing to a splice already running.

@@ -74,7 +74,7 @@ Never register before binding. If you register and the bind then fails, your ent
 
 Bind to loopback. Registration plus the relay is how other agents reach you; exposing a port to the network is not.
 
-**A name is an address, and one live registration holds it in your Team.** Registering a name you already hold updates its port — that is how you correct an advertisement when your service restarts somewhere else. Registering a name _another_ session in your Team currently holds is refused, because consumers ask for a name and nothing else, so two holders would make which port they reach a coin flip. If you are refused, pick a more specific name (`api-<what-it-is>` rather than `api`) rather than retrying; the name frees up on its own when the session holding it finishes.
+**A name is an address, and one registration holds it in your Team.** Registering a name you already hold updates its port — that is how you correct an advertisement when your service restarts somewhere else. Registering a name another session currently has seated is refused, because consumers ask for a name and nothing else, so two live holders would make which port they reach a coin flip. If you are refused, pick a more specific name (`api-<what-it-is>` rather than `api`) and tell your Lead if the collision was a surprise. A name whose holder is parked, failed, or between dispatches is taken over by your registration. The advertisement stays until you call `unregister_service` or the session is closed. Park and a failed attempt do not drop it. `unregister_service` drops the name only — it does not stop the process.
 
 ## Running anything long
 

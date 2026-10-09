@@ -24,18 +24,12 @@ public sealed record MintWorkerInstanceToken(WorkerInstanceId Instance, Guid Mac
 public sealed record RevokeWorkerInstanceToken(WorkerInstanceId Instance) : Effect;
 
 /// <summary>
-/// Registered services are cleared and relay forwards released (§6). Emitted on every
-/// transition out of <c>working</c> <em>except</em> a permission request (§11 permission
-/// bridge): that worker never left its tool call, so it keeps both and is about to return
-/// to <c>working</c> as the same incumbent — tearing them down would break a live worker
-/// mid-turn for asking a question.
-///
-/// <para><b>The exception compounds.</b> Every path that emits this guards on the task
-/// being <c>working</c>, so a permission-blocked task that is then parked on wait-TTL
-/// expiry, or requeued on liveness loss, does not clear them either: a task can reach
-/// <c>parked</c> or <c>submitted</c> still holding registered services and live relay
-/// grants. Anything reasoning about grant lifetime should read that as the real
-/// invariant rather than assuming this fires whenever <c>working</c> is left.</para>
+/// Registered services are cleared and relay forwards released (§8.2). Emitted only
+/// when the session becomes hidden — stop, accept, discard, cancel. Park, a failed
+/// attempt, a requeue, and a live permission or plan wait keep the advertisement:
+/// the listener may be a <c>start_process</c> child or a machine fixture that
+/// outlives this turn. A worker drops one name with <c>unregister_service</c>; a
+/// seated session may take a name whose holder is no longer seated.
 /// </summary>
 public sealed record ClearServicesAndForwards : Effect;
 

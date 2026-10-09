@@ -195,9 +195,12 @@ public static class SessionStateMachine
                 $"liveness loss was decided about instance {judged}, which is no longer the "
                 + $"incumbent of a live attempt (now {task.State}); the dispatch it judged has moved on");
 
-        var effects = new List<Effect> { new ClearServicesAndForwards() };
+        // A failed attempt is not a close. The advertisement stays until the
+        // session is hidden, the worker unregisters it, or a seated session
+        // takes the name (§8.2).
+        var effects = new List<Effect>();
         if (task.CurrentInstance is { } instance)
-            effects.Insert(0, new RevokeWorkerInstanceToken(instance));
+            effects.Add(new RevokeWorkerInstanceToken(instance));
         if (task.Park is { } park)
             effects.Add(new WriteParkRecord(park));
 
@@ -345,11 +348,10 @@ public static class SessionStateMachine
                 "a permission request must name the tool it is asking about");
 
         // Permission is the one live wait inside a tool call: the process cannot
-        // take another turn until a verdict, so it leaves working. A question is
-        // a turn, not a phase — the ACP session stays in working, idle for a
-        // Lead follow-up (ideas/sessions.md stage 3). Services and the instance
-        // stay either way. Park / wait-TTL / a dead-session AnswerInput are the
-        // edges that release them.
+        // take another turn until a verdict. A question is a turn, not a phase —
+        // the ACP session stays in working, idle for a Lead follow-up
+        // (ideas/sessions.md stage 3). Services stay either way. They are released
+        // when the session is hidden, not when it is parked or requeued (§8.2).
         // The worker is observably up even if started never landed (tests, lost event).
         if (c.Kind == InputRequestKind.Permission)
             return Done(task with
@@ -434,8 +436,9 @@ public static class SessionStateMachine
         // the transcript on the preferred machine (§11), and leave the infrastructure
         // counter untouched — a Lead answering is not an infrastructure requeue (§6,
         // two counters). A null park means the dispatched machine is gone; the task
-        // still requeues and redispatch cold-starts elsewhere.
-        var effects = new List<Effect> { new ClearServicesAndForwards() };
+        // still requeues and redispatch cold-starts elsewhere. The registration
+        // stays: this is a requeue, not a close (§8.2).
+        var effects = new List<Effect>();
         if (task.CurrentInstance is { } instance)
             effects.Add(new RevokeWorkerInstanceToken(instance));
         if (c.Park is { } park)
@@ -622,7 +625,9 @@ public static class SessionStateMachine
         if (task.OccupancyObserved != Occupancy.Running && task.CurrentInstance is null)
             return WrongState(task, SessionState.Working);
 
-        var effects = new List<Effect> { new WriteParkRecord(park), new ClearServicesAndForwards() };
+        // Park keeps registered services. The session is not hidden, and a
+        // start_process child or a machine fixture may still be listening (§8.2).
+        var effects = new List<Effect> { new WriteParkRecord(park) };
         if (task.CurrentInstance is { } instance)
             effects.Insert(0, new RevokeWorkerInstanceToken(instance));
 
@@ -846,7 +851,6 @@ public static class SessionStateMachine
                 InfrastructureRequeues = task.InfrastructureRequeues + 1,
                 LastRequeueReason = LivenessLossReason.ProcessExited,
             };
-            effects.Insert(0, new ClearServicesAndForwards());
             return Done(next, effects.ToArray());
         }
 
@@ -881,7 +885,6 @@ public static class SessionStateMachine
 
         if (task.MessageState == MessageState.AwaitingPull && task.PullRedelivered)
         {
-            effects.Insert(0, new ClearServicesAndForwards());
             return Done(
                 next with
                 {
@@ -896,7 +899,6 @@ public static class SessionStateMachine
 
         if (task.OccupancyDesired == Occupancy.Running)
         {
-            effects.Insert(0, new ClearServicesAndForwards());
             return Done(
                 next with
                 {

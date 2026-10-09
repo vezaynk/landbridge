@@ -152,9 +152,8 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(await NewStore(db, clock, rig).ApplyAsync(
             worker.Session, new ReportResult(new WorkerCaller(team, worker.Session, worker.Instance), "ref")));
 
-        // The overwhelmingly common transition: no grants, so no reads to make and no
-        // machines to tell. The effect still fires (services are cleared) — this pins that
-        // the close costs nothing when there is nothing to close.
+        // A report keeps the process and its services, and there are no grants,
+        // so there is nothing to close.
         Assert.Empty(rig.Closes);
     }
 

@@ -133,8 +133,9 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             // read's. Unique rather than merely indexed because two rows for one name made
             // "which port" a raffle; the store refuses the second register (§8.2,
             // Rule.ServiceNameUniqueInTeam) and this is what holds when two race. No filter
-            // is needed: a row exists only while its task is working, since
-            // ClearServicesAndForwards deletes it on the way out.
+            // is needed: a second row for one name cannot land. The store deletes
+            // the row when the session is hidden, on unregister, or by repointing
+            // it when a seated session takes a stale name.
             e.HasIndex(s => new { s.TeamId, s.Name }).IsUnique();
         });
 
