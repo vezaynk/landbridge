@@ -10,6 +10,10 @@
 
   <ItemGroup>
     <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.4.6" />
+    <!-- StreamJsonRpc, via the Aspire SDK, still depends on MessagePack 2.5.302.
+         Restore treats the advisories on that version as errors. 2.5.307 is the
+         patched 2.5 line (GHSA-qhrr-8q5h-9q3h, GHSA-7rj2-5w9w-r9jx). -->
+    <PackageReference Include="MessagePack" Version="2.5.307" />
   </ItemGroup>
 
   <ItemGroup>

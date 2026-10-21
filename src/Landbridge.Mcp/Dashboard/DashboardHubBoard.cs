@@ -155,7 +155,9 @@ internal static class DashboardHubBoard
                 machineName.GetValueOrDefault(machine) ?? ""));
         }
 
-        var obsMachines = machines.Select(m => new ObservabilityMachine(
+        // Ready is the last heartbeat's flag and stays set after the runner exits.
+        // The rail is the fleet that spoke inside the liveness window.
+        var obsMachines = machines.Where(m => m.Live).Select(m => new ObservabilityMachine(
             m.Id.ToString("D"), m.Ready, m.UnderBackPressure, m.LastSpokeAt,
             m.Processes?.Count(p => string.Equals(p.State, "running", StringComparison.OrdinalIgnoreCase)) ?? 0,
             m.Processes?.Count ?? 0, m.Slug, m.Name)).ToList();
@@ -186,7 +188,9 @@ internal static class DashboardHubBoard
             return null;
         var sessions = await hub.GetAsync<List<HubSessionListItem>>("/sessions?hidden=true", bearer, ct) ?? [];
         var byId = sessions.ToDictionary(s => s.Id);
-        return machines.Select(m =>
+        // Same window as the rail: a silent enrollment is absent, even when its
+        // stored ready bit is still set.
+        return machines.Where(m => m.Live).Select(m =>
         {
             var running = (m.Processes ?? [])
                 .Where(p => string.Equals(p.State, "running", StringComparison.OrdinalIgnoreCase))
