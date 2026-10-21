@@ -187,10 +187,13 @@ internal static class DashboardCss
       border-radius: 8px; padding: 12px; margin: 10px 0;
     }
     .secret label { display: block; font-weight: 600; margin-bottom: 6px; }
-    .secret input[type=text] {
+    .secret input[type=text], .secret textarea {
       width: 100%; padding: 8px 10px; border: 1px solid var(--line);
       border-radius: 6px; background: var(--bg); color: var(--ink);
-      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .secret textarea {
+      min-height: 22rem; white-space: pre; resize: vertical; display: block;
     }
     .connect-claim label, .connect-enroll label { display: block; font-weight: 600; margin: 10px 0 6px; }
     .connect-claim input[type=text] {
