@@ -8,6 +8,7 @@ using Landbridge.ControlPlane.Tests;
 using Landbridge.Core;
 using Landbridge.Mcp.Auth;
 using Landbridge.Mcp.Dashboard;
+using Landbridge.Mcp.Skills;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -65,15 +66,14 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("--auth-url", html, StringComparison.Ordinal);
         Assert.DoesNotContain("--control-url", html, StringComparison.Ordinal);
         Assert.DoesNotContain("seed boxes", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("landbridged --enroll", html, StringComparison.Ordinal);
         Assert.True(html.IndexOf("/dashboard/connect/claim", StringComparison.Ordinal)
             < html.IndexOf("[mcp_servers.landbridge]", StringComparison.Ordinal));
-        Assert.True(html.IndexOf("/dashboard/connect/enroll-token", StringComparison.Ordinal)
-            < html.IndexOf("landbridged --enroll", StringComparison.Ordinal));
         Assert.Contains("/dashboard/connect/claim", html, StringComparison.Ordinal);
         Assert.Contains("/dashboard/connect/enroll-token", html, StringComparison.Ordinal);
         Assert.Contains("landbridge://skills/lead", html, StringComparison.Ordinal);
         Assert.Contains("landbridge://skills/enroll", html, StringComparison.Ordinal);
-        Assert.Contains("landbridged --enroll", html, StringComparison.Ordinal);
+        Assert.Contains("Paste the prompt into a harness", html, StringComparison.Ordinal);
         Assert.Contains("Never put", html, StringComparison.Ordinal);
         Assert.Contains("[mcp_servers.landbridge]", html, StringComparison.Ordinal);
         Assert.Contains("Authorization = \"Bearer", html, StringComparison.Ordinal);
@@ -84,8 +84,6 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.DoesNotContain("claim_lead", html, StringComparison.Ordinal);
         Assert.DoesNotContain("/landbridge-lead", html, StringComparison.Ordinal);
         Assert.Contains("teamId", html, StringComparison.Ordinal);
-        Assert.Contains("--state-dir", html, StringComparison.Ordinal);
-        Assert.Contains("Machine Group label", html, StringComparison.Ordinal);
         Assert.Contains("owned only this Team", html, StringComparison.Ordinal);
         Assert.DoesNotContain("permission-level", html, StringComparison.Ordinal);
         Assert.DoesNotContain("claim one below", html, StringComparison.Ordinal);
@@ -190,7 +188,13 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         var token = doc.RootElement.GetProperty("token").GetString();
         Assert.StartsWith("lbr_e_", token);
         Assert.True(doc.RootElement.GetProperty("expiresAt").GetDateTimeOffset() > DateTimeOffset.UtcNow);
-        Assert.False(string.IsNullOrWhiteSpace(doc.RootElement.GetProperty("authUrl").GetString()));
+        var authUrl = doc.RootElement.GetProperty("authUrl").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(authUrl));
+        var prompt = doc.RootElement.GetProperty("prompt").GetString();
+        Assert.NotNull(prompt);
+        Assert.Contains(token!, prompt, StringComparison.Ordinal);
+        Assert.Contains(authUrl!, prompt, StringComparison.Ordinal);
+        AssertEnrollmentPrompt(prompt);
 
         await using var db = pg.NewContext();
         var exchanged = await new TokenService(db, TimeProvider.System)
@@ -199,10 +203,11 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
 
         var htmlRes = await PostFormAsync(app, "/dashboard/connect/enroll-token", new Dictionary<string, string>(), ct);
         Assert.Equal(HttpStatusCode.OK, htmlRes.StatusCode);
+        Assert.Contains("no-store", htmlRes.Headers.CacheControl?.ToString(), StringComparison.Ordinal);
         var issued = await htmlRes.Content.ReadAsStringAsync(ct);
-        Assert.Contains("--auth-url", issued, StringComparison.Ordinal);
-        Assert.DoesNotContain("--control-url", issued, StringComparison.Ordinal);
-        Assert.DoesNotContain("[mcp_servers.landbridge]", issued, StringComparison.Ordinal);
+        Assert.Contains("Paste this into a harness", issued, StringComparison.Ordinal);
+        Assert.Contains("lbr_e_", issued, StringComparison.Ordinal);
+        AssertEnrollmentPrompt(issued);
 
         await app.StopAsync(ct);
     }
@@ -288,6 +293,36 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
 
         await app.StopAsync(ct);
+    }
+
+    [Fact]
+    public void Enrollment_prompt_carries_the_token_and_the_enroll_skill()
+    {
+        var prompt = ConnectEndpoints.RenderEnrollmentPrompt(
+            "lbr_e_abc",
+            DateTimeOffset.Parse("2026-10-21T12:00:00Z"),
+            "https://auth.example");
+        Assert.Contains("lbr_e_abc", prompt, StringComparison.Ordinal);
+        Assert.Contains("https://auth.example", prompt, StringComparison.Ordinal);
+        Assert.Contains("2026-10-21 12:00:00Z", prompt, StringComparison.Ordinal);
+        AssertEnrollmentPrompt(prompt);
+        Assert.Contains(SkillBundle.Enroll.Trim(), prompt, StringComparison.Ordinal);
+        Assert.Contains(SkillBundle.RunnerConfig.Trim(), prompt, StringComparison.Ordinal);
+    }
+
+    private static void AssertEnrollmentPrompt(string prompt)
+    {
+        Assert.Contains("--auth-url", prompt, StringComparison.Ordinal);
+        Assert.Contains("--enroll-token-file", prompt, StringComparison.Ordinal);
+        Assert.Contains("--state-dir", prompt, StringComparison.Ordinal);
+        Assert.Contains("landbridged --enroll", prompt, StringComparison.Ordinal);
+        Assert.Contains("Machine Group label", prompt, StringComparison.Ordinal);
+        Assert.Contains("landbridge://skills/enroll", prompt, StringComparison.Ordinal);
+        Assert.Contains("# Enrolling a machine", prompt, StringComparison.Ordinal);
+        Assert.Contains("references/runner-config.md", prompt, StringComparison.Ordinal);
+        Assert.Contains("claude-agent-acp", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("--control-url", prompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("[mcp_servers.landbridge]", prompt, StringComparison.Ordinal);
     }
 
     private async Task<HttpResponseMessage> PostAsync(WebApplication app, string path, object body, CancellationToken ct)

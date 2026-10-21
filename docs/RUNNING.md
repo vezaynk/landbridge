@@ -147,7 +147,8 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
   dummy-task check aimed at a named profile: `POST` mints the set,
   `GET /dashboard/conformance/{runId}` reports states), and `/dashboard/connect`
   (how to reach the plane as a Lead, and how to enroll a machine — including
-  issuing an enrollment token, issuing a Lead token, and minting a one-time setup
+  issuing an enrollment token, whose next page is a prompt you paste into a
+  harness on that machine, issuing a Lead token, and minting a one-time setup
   link whose first GET is markdown that contains the Lead bearer). Pages carry a
   5-second auto-refresh and each has a JSON twin (`?format=json` or an
   `Accept: application/json` request). A pasted human/Lead token is accepted as a
@@ -237,11 +238,14 @@ The long-lived refresh token is the only durable secret on the box.
 > Group view closes its channel, requeues its tasks, kills its worker tokens, and
 > makes it re-enroll to return.
 
-> **Half built.** The agent-guided enrollment §11 describes ships as a *skill*, not a
-> prompt: `landbridge-enroll` (`landbridge://skills/enroll`) walks an agent through probing the
+> **Half built.** The agent-guided enrollment §11 describes ships as a *skill*, not an
+> MCP prompt: `landbridge-enroll` (`landbridge://skills/enroll`) walks an agent through probing the
 > harness, writing the runner config, handing the service install to the human, and
 > smoke-testing the machine. No MCP prompt is registered, so there is no `/landbridge-enroll`
-> slash command to invoke it — the client reads the skill off `resources/list`. The
+> slash command — a connected client reads the skill off `resources/list`. Connect's
+> **Issue enrollment token** button is the way in: the next page is a one-time prompt
+> to paste into a harness on the machine. That prompt carries the token (a `0600` file,
+> never argv) and the skill text, because the box is not an MCP client yet. The
 > control-plane **conformance run** — dispatching trivial tasks and judging the machine
 > before it joins as `ready` — does not exist; nothing in the plane probes a new machine,
 > and the skill's manual smoke test is its stand-in.

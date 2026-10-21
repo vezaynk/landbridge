@@ -2,6 +2,7 @@ using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Landbridge.Mcp.Dashboard.Components.Pages;
+using Landbridge.Mcp.Skills;
 using Landbridge.Web;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -98,7 +99,10 @@ internal static class ConnectEndpoints
 
     /// <summary>
     /// POST /dashboard/connect/enroll-token — mint a single-use 15-minute
-    /// enrollment token and show it once. Same-origin, human-only.
+    /// enrollment token and show a prompt to paste into a harness on the
+    /// machine. Same-origin, human-only. The prompt is the one-time guide:
+    /// the token rides in it, and so does the enrollment skill, because the
+    /// box is not an MCP client yet.
     /// </summary>
     private static async Task<IResult> HandleIssueEnrollmentAsync(
         HttpContext http, TokenService tokens, IConfiguration config, CancellationToken ct)
@@ -110,21 +114,82 @@ internal static class ConnectEndpoints
         {
             var issued = await tokens.IssueEnrollmentTokenAsync(ct);
             var authUrl = ResolveAuthUrl(config, http);
-            var model = new
-            {
-                token = issued.Token,
-                expiresAt = issued.ExpiresAt,
-                authUrl,
-            };
+            var prompt = RenderEnrollmentPrompt(issued.Token, issued.ExpiresAt, authUrl);
+            http.Response.Headers.CacheControl = "no-store";
             return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
-                ? Results.Json(model, Json, statusCode: StatusCodes.Status201Created)
+                ? Results.Json(new
+                {
+                    token = issued.Token,
+                    expiresAt = issued.ExpiresAt,
+                    authUrl,
+                    prompt,
+                }, Json, statusCode: StatusCodes.Status201Created)
                 : RazorPage<EnrollmentTokenIssuedPage>(new
                 {
-                    Token = issued.Token,
+                    Prompt = prompt,
                     ExpiresAt = issued.ExpiresAt ?? default,
-                    AuthUrl = authUrl,
                 });
         });
+    }
+
+    /// <summary>
+    /// The paste-into-a-harness guide for one enrollment token. Same shape as
+    /// <see cref="RenderSetupMarkdown"/>: the secret is in the text, the skill
+    /// is the procedure. The skill and the runner-config reference are inlined
+    /// because a machine that is not enrolled cannot read
+    /// <c>landbridge://skills/enroll</c>.
+    /// </summary>
+    internal static string RenderEnrollmentPrompt(string token, DateTimeOffset? expiresAt, string authUrl)
+    {
+        var expires = expiresAt?.ToString("u") ?? "shortly";
+        return $"""
+             # Enroll this machine into Landbridge
+
+             This prompt is a one-time delivery of an enrollment token, the same kind of guide a Lead setup link returns. Paste it into a harness on the machine you are enrolling. Do not commit it.
+
+             You are on that machine. A human is at this terminal. Follow the enrollment skill included below (`landbridge-enroll`, `landbridge://skills/enroll`). There is no `/landbridge-enroll` command. This box is not a Landbridge MCP client yet, so the skill is copied here — do not look for a slash command or an MCP resource you cannot read. A machine credential is not an MCP client either. This prompt is the copy.
+
+             Steps that need sudo are the human's. Prepare the unit or plist, say what it does, and have them run the install.
+
+             ## Token
+
+             Single-use. Expires {expires}. Fifteen minutes.
+
+             Never put the token on argv. It would land in shell history and `/proc/<pid>/cmdline`. Write it to a `0600` file, exchange it, then delete the file. Do not echo the token back.
+
+             `--auth-url` is the authorization server, where `POST /enroll` lives: `{authUrl}`.
+
+             `--name` is the Machine Group label (the short hostname if you omit it), not a runner profile. After you probe, name profiles `<harness>-<hostname>-<os>`.
+
+             Ask which state dir to use before you exchange. Omit `--state-dir` to use the default: `$LANDBRIDGE_STATE_DIR`, else `$XDG_STATE_HOME/landbridge`, else `~/.landbridge`. Pass `--state-dir /var/lib/landbridged` only when the human is installing a system service and will start the daemon with that same path. The path you enroll with is the path you start with.
+
+             Exchange the token first. Then follow the skill. The runner-config reference the skill cites is the last section of this prompt — use it when you write the config, not before the exchange.
+
+             ```bash
+             umask 077
+             cat > ./enroll.token <<'EOF'
+             {token}
+             EOF
+             chmod 600 ./enroll.token
+             landbridged --enroll \
+               --auth-url {authUrl} \
+               --enroll-token-file ./enroll.token \
+               --name "$(hostname -s)"
+             rm -f ./enroll.token
+             ```
+
+             That writes `credentials.json` (`0600` in a `0700` directory). The exchange answers with the plane's control URL, so the daemon does not need that URL on the command line. If `landbridged` is not installed, install it before the exchange. The binary is what runs `--enroll`.
+
+             ## Enrollment skill
+
+             {SkillBundle.Enroll.TrimEnd()}
+
+             ## Runner config reference
+
+             The enrollment skill calls this `references/runner-config.md`. It is not a file on this machine. Use this copy when you write the config.
+
+             {SkillBundle.RunnerConfig.TrimEnd()}
+             """;
     }
 
     /// <summary>

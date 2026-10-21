@@ -103,36 +103,23 @@ Authorization = "Bearer lbr_l_…"</pre>
 
     <section class="howto">
         <h2>Enroll a machine</h2>
-        <p><span class="mono">landbridged</span> dials out. Enrollment exchanges a
-            single-use, 15-minute token for persistent machine credentials. Never put
-            the token on argv — it would land in shell history and
-            <span class="mono">/proc/…/cmdline</span>.</p>
+        <p>Enrollment is a harness on the machine, following
+            <span class="mono">landbridge://skills/enroll</span>. There is no
+            <span class="mono">/landbridge-enroll</span> command. Issue a token
+            and the next page is a prompt — the same kind of one-time guide a
+            Lead setup link returns. Paste that prompt into a harness on the
+            box. The skill rides in the prompt, because the machine cannot read
+            an MCP resource until it is enrolled, and a machine credential is
+            not an MCP client.</p>
         <form class="card connect-enroll" method="post" action="/dashboard/connect/enroll-token">
             <button type="submit">Issue enrollment token</button>
-            <p class="nt">Shown once. 15 minutes, single-use.</p>
+            <p class="nt">Shown once. Paste the prompt into a harness on the machine.
+                The token inside is 15 minutes and single-use. Never put it on argv
+                — it would land in shell history and
+                <span class="mono">/proc/…/cmdline</span>.
+                <span class="mono">--auth-url</span> in the prompt is the authorization
+                server, where <span class="mono">/enroll</span> lives.</p>
         </form>
-        <p>On the box, write it to a <span class="mono">0600</span> file and exchange it.
-            <span class="mono">--auth-url</span> is the authorization server, where
-            <span class="mono">/enroll</span> lives. <span class="mono">--name</span> is
-            the Machine Group label (defaults to hostname), not a runner profile.</p>
-        <pre class="howto">landbridged --enroll \
-  --auth-url @AuthUrl \
-  --enroll-token-file ./enroll.token \
-  --name $(hostname -s) \
-  --state-dir /var/lib/landbridged
-
-# or pipe, no file (same --state-dir, or omit both to use ~/.landbridge):
-landbridged --enroll --auth-url @AuthUrl --state-dir /var/lib/landbridged &lt; enroll.token</pre>
-        <p class="nt">That writes <span class="mono">credentials.json</span> under the
-            state dir (<span class="mono">0600</span> in a <span class="mono">0700</span>
-            directory). The exchange answers with the plane's control URL, so the
-            daemon does not need it on the command line. Use the same
-            <span class="mono">--state-dir</span> when you start
-            <span class="mono">landbridged</span> (omit both to use
-            <span class="mono">~/.landbridge</span>). Treat that file as the machine:
-            a copy is a working identity on any host. The runner config and the
-            profile check are in <span class="mono">landbridge://skills/enroll</span>
-            and <span class="mono">landbridge://skills/runner-config</span>.</p>
     </section>
 }
 
@@ -142,12 +129,10 @@ landbridged --enroll --auth-url @AuthUrl --state-dir /var/lib/landbridged &lt; e
     protected override bool AutoRefresh => false;
 
     private string McpUrl { get; set; } = DispatchService.DefaultPublicMcpUrl;
-    private string AuthUrl { get; set; } = DispatchService.DefaultPublicMcpUrl;
 
     protected override Task<string?> LoadAsync()
     {
         McpUrl = ConnectEndpoints.ResolveMcpUrl(Config, Http.HttpContext);
-        AuthUrl = ConnectEndpoints.ResolveAuthUrl(Config, Http.HttpContext);
         return Task.FromResult<string?>(null);
     }
 }
