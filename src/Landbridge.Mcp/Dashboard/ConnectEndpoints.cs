@@ -32,6 +32,7 @@ internal static class ConnectEndpoints
         // Unauthenticated on purpose: the capability in the path is the secret.
         // First GET burns it. Outside /dashboard so the session cookie is not
         // required and does not ride a paste to an agent.
+        app.MapGet("/setup/enroll/{code}", HandleRedeemEnrollmentSetupLink);
         app.MapGet("/setup/{code}", HandleRedeemSetupLink);
         return app;
     }
@@ -94,50 +95,82 @@ internal static class ConnectEndpoints
                 setupLink = "/dashboard/connect/setup-link",
             },
             setupPath = "/setup/{code}",
+            enrollSetupPath = "/setup/enroll/{code}",
         };
     }
 
     /// <summary>
     /// POST /dashboard/connect/enroll-token — mint a single-use 15-minute
-    /// enrollment token and show a prompt to paste into a harness on the
-    /// machine. Same-origin, human-only. The prompt is the one-time guide:
-    /// the token rides in it, and so does the enrollment skill, because the
-    /// box is not an MCP client yet.
+    /// enrollment token and a one-time URL whose first GET is the guide that
+    /// contains it. Same-origin, human-only. The page shows the URL, not the
+    /// token. The skill rides in the redeemed markdown because the box is not
+    /// an MCP client yet.
     /// </summary>
     private static async Task<IResult> HandleIssueEnrollmentAsync(
-        HttpContext http, TokenService tokens, IConfiguration config, CancellationToken ct)
+        HttpContext http, TokenService tokens, EnrollmentSetupLinkStore links,
+        IConfiguration config, CancellationToken ct)
     {
         if (CrossOriginRefusal(http, config) is { } refusal)
             return refusal;
 
-        return await GatedHuman(http, tokens, ct, async _ =>
+        return await GatedHuman(http, tokens, ct, _ =>
         {
-            var issued = await tokens.IssueEnrollmentTokenAsync(ct);
-            var authUrl = ResolveAuthUrl(config, http);
-            var prompt = RenderEnrollmentPrompt(issued.Token, issued.ExpiresAt, authUrl);
-            http.Response.Headers.CacheControl = "no-store";
-            return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
-                ? Results.Json(new
-                {
-                    token = issued.Token,
-                    expiresAt = issued.ExpiresAt,
-                    authUrl,
-                    prompt,
-                }, Json, statusCode: StatusCodes.Status201Created)
-                : RazorPage<EnrollmentTokenIssuedPage>(new
-                {
-                    Prompt = prompt,
-                    ExpiresAt = issued.ExpiresAt ?? default,
-                });
+            return IssueEnrollmentLinkAsync(http, tokens, links, config, ct);
         });
     }
 
+    private static async Task<IResult> IssueEnrollmentLinkAsync(
+        HttpContext http, TokenService tokens, EnrollmentSetupLinkStore links,
+        IConfiguration config, CancellationToken ct)
+    {
+        var issued = await tokens.IssueEnrollmentTokenAsync(ct);
+        var authUrl = ResolveAuthUrl(config, http);
+        var link = links.Mint(issued.Token, authUrl, issued.ExpiresAt);
+        var url = $"{http.Request.Scheme}://{http.Request.Host}/setup/enroll/{link.Code}";
+        var prompt = RenderEnrollmentSetupPrompt(url);
+        http.Response.Headers.CacheControl = "no-store";
+        return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
+            ? Results.Json(new { url, expiresAt = link.ExpiresAt, prompt }, Json, statusCode: StatusCodes.Status201Created)
+            : RazorPage<EnrollmentSetupLinkIssuedPage>(new
+            {
+                Prompt = prompt,
+                ExpiresAt = link.ExpiresAt,
+            });
+    }
+
     /// <summary>
-    /// The paste-into-a-harness guide for one enrollment token. Same shape as
-    /// <see cref="RenderSetupMarkdown"/>: the secret is in the text, the skill
-    /// is the procedure. The skill and the runner-config reference are inlined
-    /// because a machine that is not enrolled cannot read
-    /// <c>landbridge://skills/enroll</c>.
+    /// The sentence a human pastes into a harness. The link is the one-time
+    /// guide; the harness fetches it. The token is not in this sentence.
+    /// </summary>
+    internal static string RenderEnrollmentSetupPrompt(string url) =>
+        "I would like to enroll this machine into Landbridge. Follow the instructions here: " + url;
+
+    /// <summary>
+    /// GET /setup/enroll/{code} — redeem once. The enrollment token is in the
+    /// markdown body, never in this URL. Unknown / used / expired are one generic 404.
+    /// </summary>
+    private static IResult HandleRedeemEnrollmentSetupLink(
+        string code, HttpContext http, EnrollmentSetupLinkStore links)
+    {
+        http.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+        http.Response.Headers.Pragma = "no-cache";
+        http.Response.Headers["Referrer-Policy"] = "no-referrer";
+        http.Response.Headers["X-Robots-Tag"] = "noindex, nofollow";
+
+        var instructions = links.Redeem(code);
+        if (instructions is null)
+            return Results.Text("", "text/plain; charset=utf-8", statusCode: StatusCodes.Status404NotFound);
+
+        return Results.Text(
+            RenderEnrollmentPrompt(instructions.Token, instructions.TokenExpiresAt, instructions.AuthUrl),
+            "text/markdown; charset=utf-8");
+    }
+
+    /// <summary>
+    /// The one-time enrollment guide. Same shape as <see cref="RenderSetupMarkdown"/>:
+    /// the secret is in the text, the skill is the procedure. The skill and the
+    /// runner-config reference are inlined because a machine that is not enrolled
+    /// cannot read <c>landbridge://skills/enroll</c>.
     /// </summary>
     internal static string RenderEnrollmentPrompt(string token, DateTimeOffset? expiresAt, string authUrl)
     {
@@ -145,9 +178,9 @@ internal static class ConnectEndpoints
         return $"""
              # Enroll this machine into Landbridge
 
-             This prompt is a one-time delivery of an enrollment token, the same kind of guide a Lead setup link returns. Paste it into a harness on the machine you are enrolling. Do not commit it.
+             This page is a one-time delivery of an enrollment token. Reloading it 404s.
 
-             You are on that machine. A human is at this terminal. Follow the enrollment skill included below (`landbridge-enroll`, `landbridge://skills/enroll`). There is no `/landbridge-enroll` command. This box is not a Landbridge MCP client yet, so the skill is copied here — do not look for a slash command or an MCP resource you cannot read. A machine credential is not an MCP client either. This prompt is the copy.
+             You are on the machine being enrolled. A human is at this terminal. Follow the enrollment skill included below (`landbridge-enroll`, `landbridge://skills/enroll`). There is no `/landbridge-enroll` command. This box is not a Landbridge MCP client yet, so the skill is copied here — do not look for a slash command or an MCP resource you cannot read. A machine credential is not an MCP client either. This page is the copy.
 
              Steps that need sudo are the human's. Prepare the unit or plist, say what it does, and have them run the install.
 
@@ -163,7 +196,7 @@ internal static class ConnectEndpoints
 
              Ask which state dir to use before you exchange. Omit `--state-dir` to use the default: `$LANDBRIDGE_STATE_DIR`, else `$XDG_STATE_HOME/landbridge`, else `~/.landbridge`. Pass `--state-dir /var/lib/landbridged` only when the human is installing a system service and will start the daemon with that same path. The path you enroll with is the path you start with.
 
-             Exchange the token first. Then follow the skill. The runner-config reference the skill cites is the last section of this prompt — use it when you write the config, not before the exchange.
+             Exchange the token first. Then follow the skill. The runner-config reference the skill cites is the last section of this page — use it when you write the config, not before the exchange.
 
              ```bash
              umask 077
@@ -295,14 +328,21 @@ internal static class ConnectEndpoints
             // off-port bind) is reachable. The markdown still names mcpUrl,
             // which is what the harness should POST.
             var url = $"{http.Request.Scheme}://{http.Request.Host}/setup/{issued.Code}";
+            var prompt = RenderLeadSetupPrompt(url);
             var expiresAt = issued.ExpiresAt;
             var teamSlug = await tokens.FindTeamSlugAsync(claimed.Team.Value, ct);
+            http.Response.Headers.CacheControl = "no-store";
             return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
-                ? Results.Json(new { url, expiresAt, teamId = teamSlug ?? claimed.Team.Value.ToString("D") }, Json,
-                    statusCode: StatusCodes.Status201Created)
+                ? Results.Json(new
+                {
+                    url,
+                    expiresAt,
+                    teamId = teamSlug ?? claimed.Team.Value.ToString("D"),
+                    prompt,
+                }, Json, statusCode: StatusCodes.Status201Created)
                 : RazorPage<SetupLinkIssuedPage>(new
                 {
-                    Url = url,
+                    Prompt = prompt,
                     ExpiresAt = expiresAt,
                     TeamId = claimed.Team.Value,
                     TeamSlug = teamSlug,
@@ -329,6 +369,14 @@ internal static class ConnectEndpoints
             RenderSetupMarkdown(instructions),
             "text/markdown; charset=utf-8");
     }
+
+    /// <summary>
+    /// The sentence a human pastes into a harness that should lead a Team.
+    /// The link is the one-time guide; the bearer is not in this sentence.
+    /// </summary>
+    internal static string RenderLeadSetupPrompt(string url) =>
+        "I would like to setup Landbridge to help manage a fleet of remote harnesses over MCP. "
+        + $"Follow the instructions here: {url}";
 
     internal static string RenderSetupMarkdown(LeadSetupLinkStore.Instructions i) =>
         $"""

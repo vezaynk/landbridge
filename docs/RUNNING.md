@@ -147,9 +147,9 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
   dummy-task check aimed at a named profile: `POST` mints the set,
   `GET /dashboard/conformance/{runId}` reports states), and `/dashboard/connect`
   (how to reach the plane as a Lead, and how to enroll a machine — including
-  issuing an enrollment token, whose next page is a prompt you paste into a
-  harness on that machine, issuing a Lead token, and minting a one-time setup
-  link whose first GET is markdown that contains the Lead bearer). Pages carry a
+  issuing an enrollment setup link, whose first GET is markdown that contains
+  the enrollment token and the guide, issuing a Lead token, and minting a
+  one-time setup link whose first GET is markdown that contains the Lead bearer). Pages carry a
   5-second auto-refresh and each has a JSON twin (`?format=json` or an
   `Accept: application/json` request). A pasted human/Lead token is accepted as a
   secondary door — but a **Lead** token reads only the Teams it owns: `/dashboard/teams`,
@@ -243,9 +243,9 @@ The long-lived refresh token is the only durable secret on the box.
 > harness, writing the runner config, handing the service install to the human, and
 > smoke-testing the machine. No MCP prompt is registered, so there is no `/landbridge-enroll`
 > slash command — a connected client reads the skill off `resources/list`. Connect's
-> **Issue enrollment token** button is the way in: the next page is a one-time prompt
-> to paste into a harness on the machine. That prompt carries the token (a `0600` file,
-> never argv) and the skill text, because the box is not an MCP client yet. The
+> enrollment **One-time setup link** is the way in: the page shows a URL, and the
+> first GET is markdown that carries the token (a `0600` file, never argv) and the
+> skill text, because the box is not an MCP client yet. Opening it burns it. The
 > control-plane **conformance run** — dispatching trivial tasks and judging the machine
 > before it joins as `ready` — does not exist; nothing in the plane probes a new machine,
 > and the skill's manual smoke test is its stand-in.

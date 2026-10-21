@@ -75,8 +75,9 @@ else if (Ready)
                 One-time setup link
             </button>
             <p class="nt">Issue Lead token shows the token once. One-time setup link
-                mints a URL whose first GET is markdown that contains the bearer.
-                Paste that URL to an agent; do not open it yourself.</p>
+                shows a prompt with a link inside. Paste that prompt into a harness;
+                do not open the link yourself. The first GET is markdown that
+                contains the bearer.</p>
         </form>
         <p class="nt">OAuth here (authorization code + PKCE, the same operator passphrase)
             mints an <span class="mono">lbr_h_…</span> human session, not a Lead.
@@ -105,19 +106,18 @@ Authorization = "Bearer lbr_l_…"</pre>
         <h2>Enroll a machine</h2>
         <p>Enrollment is a harness on the machine, following
             <span class="mono">landbridge://skills/enroll</span>. There is no
-            <span class="mono">/landbridge-enroll</span> command. Issue a token
-            and the next page is a prompt — the same kind of one-time guide a
-            Lead setup link returns. Paste that prompt into a harness on the
-            box. The skill rides in the prompt, because the machine cannot read
-            an MCP resource until it is enrolled, and a machine credential is
-            not an MCP client.</p>
+            <span class="mono">/landbridge-enroll</span> command. The machine
+            cannot read that skill over MCP until it is enrolled, so the guide
+            carries the skill.</p>
         <form class="card connect-enroll" method="post" action="/dashboard/connect/enroll-token">
-            <button type="submit">Issue enrollment token</button>
-            <p class="nt">Shown once. Paste the prompt into a harness on the machine.
-                The token inside is 15 minutes and single-use. Never put it on argv
-                — it would land in shell history and
-                <span class="mono">/proc/…/cmdline</span>.
-                <span class="mono">--auth-url</span> in the prompt is the authorization
+            <button type="submit">One-time setup link</button>
+            <p class="nt">The next page is a prompt with a one-time link inside.
+                Paste that prompt into a harness on the machine; do not open the
+                link yourself. The first GET is markdown that contains the
+                enrollment token and the guide. The token is 15 minutes and
+                single-use. Never put it on argv — it would land in shell history
+                and <span class="mono">/proc/…/cmdline</span>.
+                <span class="mono">--auth-url</span> in the guide is the authorization
                 server, where <span class="mono">/enroll</span> lives.</p>
         </form>
     </section>
