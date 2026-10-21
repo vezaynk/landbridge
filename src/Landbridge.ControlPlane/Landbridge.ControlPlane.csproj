@@ -6,13 +6,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="EFCore.NamingConventions" Version="10.0.0-rc.1" />
+    <PackageReference Include="EFCore.NamingConventions" Version="10.0.1" />
     <!-- IHostedService (DispatchService) lives here; the DI/logging abstractions
          come transitively with EF Core. -->
-    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.13" />
     <!-- Operator passphrase at rest: PasswordHasher (PBKDF2), not SHA-256. -->
-    <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="10.0.0" />
-    <PackageReference Include="System.Threading.RateLimiting" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="10.0.13" />
+    <PackageReference Include="System.Threading.RateLimiting" Version="10.0.13" />
     <!-- Pin Relational to the base EF Core version. The Npgsql provider (10.0.3)
          and NamingConventions transitively request an older Relational (10.0.4),
          but base EF Core and Design are 10.0.10 and demand Relational 10.0.10.0 at
@@ -21,8 +21,8 @@
          The test host masked it by pinning the aligned graph; running the Mcp app
          standalone under Aspire surfaced it. This explicit pin forces 10.0.10
          everywhere and clears the MSB3277 conflict warnings. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.13" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.13">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>

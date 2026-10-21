@@ -248,7 +248,7 @@ public sealed class AcpClient
             stdin,
             _inbound,
             onUnknownNotification: OnUnknownNotificationAsync,
-            onFrame: OnFrame);
+            onInboundFrame: OnFrame);
         _connection = connection;
 
         var pump = connection.RunAsync(ct);
@@ -736,7 +736,7 @@ public sealed class AcpClient
         {
             foreach (var method in methods)
             {
-                if (method is AuthMethodAuthMethodAgent agent && agent.Value.Id.Value is { Length: > 0 } id)
+                if (AuthMethodIdOf(method) is { Length: > 0 } id)
                     _authMethods.Add(id);
             }
         }
@@ -752,6 +752,18 @@ public sealed class AcpClient
                 "start with NO landbridge tools unless the machine wires them in out of band — it cannot call " +
                 "get_session or report_result, so it will do nothing useful (§10).");
     }
+
+    /// <summary>
+    /// AcpKit 0.1 types only the terminal auth method. The agent variant, which is
+    /// what harnesses send (an id and a name, no type field), arrives as raw JSON.
+    /// </summary>
+    private static string? AuthMethodIdOf(AuthMethod method) => method switch
+    {
+        AuthMethodTerminal terminal => terminal.Id.Value,
+        AuthMethodUnknown unknown when unknown.Raw.TryGetProperty("id", out var id)
+            && id.ValueKind == JsonValueKind.String => id.GetString(),
+        _ => null,
+    };
 
     private McpServer[] McpServers()
     {
@@ -1357,7 +1369,7 @@ public sealed class AcpClient
             new AcpException(AcpErrorCode.MethodNotFound, $"landbridged does not implement '{method}'"));
     }
 
-    /// <summary>The methods the agent may call on landbridged. Permission is answered; fs and terminal are not.</summary>
+    /// <summary>The methods the agent may call on landbridged. Permission is answered; fs, terminal, and elicitation are not.</summary>
     private sealed class InboundHandler(AcpClient owner) : IAcpClient
     {
         public Task<RequestPermissionResponse> SessionRequestPermissionAsync(
@@ -1387,6 +1399,17 @@ public sealed class AcpClient
 
         public Task<KillTerminalResponse> TerminalKillAsync(KillTerminalRequest request, CancellationToken cancellationToken) =>
             owner.Refuse<KillTerminalResponse>("terminal/kill");
+
+        public Task<CreateElicitationResponse> ElicitationCreateAsync(
+            CreateElicitationRequest request, CancellationToken cancellationToken) =>
+            owner.Refuse<CreateElicitationResponse>("elicitation/create");
+
+        public Task ElicitationCompleteAsync(
+            CompleteElicitationNotification request, CancellationToken cancellationToken)
+        {
+            owner.WarnDeclined("elicitation/complete");
+            return Task.CompletedTask;
+        }
     }
 }
 

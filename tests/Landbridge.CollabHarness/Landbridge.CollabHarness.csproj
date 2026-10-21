@@ -27,7 +27,7 @@
        process speaking REAL MCP back to the plane (no LLM), exactly like the
        walking-skeleton worker it mirrors. -->
   <ItemGroup>
-    <PackageReference Include="ModelContextProtocol" Version="2.0.0-rc.1" />
+    <PackageReference Include="ModelContextProtocol" Version="2.3.0" />
   </ItemGroup>
 
 </Project>

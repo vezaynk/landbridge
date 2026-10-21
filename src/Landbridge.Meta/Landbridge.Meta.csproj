@@ -15,15 +15,15 @@
 
   <ItemGroup>
     <PackageReference Include="Docker.DotNet" Version="3.125.15" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
-    <PackageReference Include="EFCore.NamingConventions" Version="10.0.0-rc.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.13" />
+    <PackageReference Include="EFCore.NamingConventions" Version="10.0.1" />
     <!-- Same pin the plane carries (see Landbridge.ControlPlane.csproj): the Npgsql
          provider and NamingConventions transitively request an older Relational,
          but base EF Core 10.0.10 demands 10.0.10.0 at load time. Without this pin
          the app output ships the older Relational and crashes building the model
          at startup. Force 10.0.10 everywhere. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.13" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.13">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>

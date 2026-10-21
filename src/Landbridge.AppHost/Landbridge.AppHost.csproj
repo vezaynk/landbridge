@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.4.6">
+<Project Sdk="Aspire.AppHost.Sdk/13.6.2">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -6,10 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UserSecretsId>2fa1335d-4ad1-4a17-9840-6ee1ba80110a</UserSecretsId>
+    <!-- The Aspire CLI that launches this host supplies DCP and the dashboard.
+         The 13.6 SDK defaults the CLI bundle off and then warns about that. -->
+    <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.4.6" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.6.2" />
     <!-- StreamJsonRpc, via the Aspire SDK, still depends on MessagePack 2.5.302.
          Restore treats the advisories on that version as errors. 2.5.307 is the
          patched 2.5 line (GHSA-qhrr-8q5h-9q3h, GHSA-7rj2-5w9w-r9jx). -->

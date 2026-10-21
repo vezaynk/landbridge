@@ -41,9 +41,9 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_NOLOGO: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
@@ -76,9 +76,9 @@ jobs:
       # The default docker driver cannot emit a multi-platform manifest; this builder can.
       # No QEMU: the runtime Dockerfiles have no RUN step, so nothing is ever executed in
       # the target rootfs — the per-platform builds are a COPY onto a multi-arch base.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -88,7 +88,7 @@ jobs:
       # so `docker manifest inspect` reads cleanly and meta's plain pull resolves the
       # host's platform with nothing else in the index.
       - name: Build and push landbridge-mcp
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: out/mcp
           file: docker/Landbridge.Mcp.Dockerfile
@@ -100,7 +100,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/landbridge-mcp:${{ steps.tags.outputs.sha }}
 
       - name: Build and push landbridge-relay
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: out/relay
           file: docker/Landbridge.Relay.Dockerfile
