@@ -76,11 +76,11 @@ jobs:
     steps:
       # The PAT here too, not just on the tool: it is what the pushed branch is authenticated
       # with, and it is what makes the resulting PR trigger ordinary PR checks.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           token: ${{ secrets.HARNESS_BUMP_TOKEN }}
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
