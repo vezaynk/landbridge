@@ -1,10 +1,10 @@
 namespace Landbridge.ControlPlane;
 
 /// <summary>
-/// Aspire-loop machine and profile names. Enroll convention is
-/// <c>&lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt;</c>. The seeded boxes run in
-/// Linux containers, so the OS is always <c>linux</c> and the hostname is the
-/// stable container name <c>apphost</c> — not the plane process's host OS.
+/// Aspire-loop machine and profile names. Seeded boxes use
+/// <c>&lt;harness&gt;-apphost-linux</c>. They run in Linux containers, so the
+/// OS is always <c>linux</c> and the hostname is the stable container name
+/// <c>apphost</c> — not the plane process's host OS.
 /// AppHost and the plane's DevSeed list stay in lockstep by calling here.
 /// </summary>
 public static class DevSeedNaming

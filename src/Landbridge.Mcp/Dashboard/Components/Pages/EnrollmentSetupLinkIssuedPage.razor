@@ -1,0 +1,17 @@
+<DashboardDocument Title="Enrollment setup link" ActiveKey="connect">
+<h1>One-time setup link</h1>
+<p class="sub">The URL is a capability, not the enrollment token.
+    The first GET returns markdown that contains the token and the enrollment
+    guide, then 404s.</p>
+<SetupPromptCard Prompt="@Prompt">
+    Expires @ExpiresAt.ToString("u"). Paste this into a harness on
+    the machine you are enrolling. Do not open the link yourself — a preview
+    or reload burns it.
+</SetupPromptCard>
+<p><a href="/dashboard/connect">← back to Connect</a></p>
+</DashboardDocument>
+
+@code {
+    [Parameter, EditorRequired] public string Prompt { get; set; } = "";
+    [Parameter] public DateTimeOffset ExpiresAt { get; set; }
+}

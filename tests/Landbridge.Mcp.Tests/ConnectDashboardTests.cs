@@ -73,7 +73,9 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("/dashboard/connect/enroll-token", html, StringComparison.Ordinal);
         Assert.Contains("landbridge://skills/lead", html, StringComparison.Ordinal);
         Assert.Contains("landbridge://skills/enroll", html, StringComparison.Ordinal);
-        Assert.Contains("Paste the prompt into a harness", html, StringComparison.Ordinal);
+        Assert.Contains("Paste that prompt into a harness", html, StringComparison.Ordinal);
+        Assert.Contains("do not open the link yourself", html, StringComparison.Ordinal);
+        Assert.Contains("One-time setup link", html, StringComparison.Ordinal);
         Assert.Contains("Never put", html, StringComparison.Ordinal);
         Assert.Contains("[mcp_servers.landbridge]", html, StringComparison.Ordinal);
         Assert.Contains("Authorization = \"Bearer", html, StringComparison.Ordinal);
@@ -185,29 +187,45 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         var res = await PostAsync(app, "/dashboard/connect/enroll-token", new { }, ct);
         Assert.Equal(HttpStatusCode.Created, res.StatusCode);
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
-        var token = doc.RootElement.GetProperty("token").GetString();
-        Assert.StartsWith("lbr_e_", token);
+        var url = doc.RootElement.GetProperty("url").GetString();
+        Assert.Contains("/setup/enroll/lbr_es_", url, StringComparison.Ordinal);
+        Assert.DoesNotContain("lbr_e_", url!.Replace("lbr_es_", "", StringComparison.Ordinal), StringComparison.Ordinal);
         Assert.True(doc.RootElement.GetProperty("expiresAt").GetDateTimeOffset() > DateTimeOffset.UtcNow);
-        var authUrl = doc.RootElement.GetProperty("authUrl").GetString();
-        Assert.False(string.IsNullOrWhiteSpace(authUrl));
-        var prompt = doc.RootElement.GetProperty("prompt").GetString();
-        Assert.NotNull(prompt);
-        Assert.Contains(token!, prompt, StringComparison.Ordinal);
-        Assert.Contains(authUrl!, prompt, StringComparison.Ordinal);
-        AssertEnrollmentPrompt(prompt);
+        Assert.False(doc.RootElement.TryGetProperty("token", out _));
+        var setupPrompt = doc.RootElement.GetProperty("prompt").GetString();
+        Assert.Equal(ConnectEndpoints.RenderEnrollmentSetupPrompt(url), setupPrompt);
+
+        using var client = Client(app);
+        var redeemed = await client.GetAsync(new Uri(url), ct);
+        Assert.Equal(HttpStatusCode.OK, redeemed.StatusCode);
+        Assert.Equal("text/markdown", redeemed.Content.Headers.ContentType!.MediaType);
+        Assert.Contains("no-store", redeemed.Headers.CacheControl?.ToString(), StringComparison.Ordinal);
+        var markdown = await redeemed.Content.ReadAsStringAsync(ct);
+        var token = System.Text.RegularExpressions.Regex.Match(markdown, @"lbr_e_[0-9A-Fa-f]+").Value;
+        Assert.StartsWith("lbr_e_", token);
+        AssertEnrollmentPrompt(markdown);
+
+        var again = await client.GetAsync(new Uri(url), ct);
+        Assert.Equal(HttpStatusCode.NotFound, again.StatusCode);
+        Assert.DoesNotContain(token, await again.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
 
         await using var db = pg.NewContext();
         var exchanged = await new TokenService(db, TimeProvider.System)
-            .ExchangeEnrollmentAsync(token!, new MachineDeclaration("box", "linux"), ct);
+            .ExchangeEnrollmentAsync(token, new MachineDeclaration("box", "linux"), ct);
         Assert.NotNull(exchanged);
 
         var htmlRes = await PostFormAsync(app, "/dashboard/connect/enroll-token", new Dictionary<string, string>(), ct);
         Assert.Equal(HttpStatusCode.OK, htmlRes.StatusCode);
         Assert.Contains("no-store", htmlRes.Headers.CacheControl?.ToString(), StringComparison.Ordinal);
         var issued = await htmlRes.Content.ReadAsStringAsync(ct);
-        Assert.Contains("Paste this into a harness", issued, StringComparison.Ordinal);
-        Assert.Contains("lbr_e_", issued, StringComparison.Ordinal);
-        AssertEnrollmentPrompt(issued);
+        Assert.Contains("One-time setup link", issued, StringComparison.Ordinal);
+        Assert.Contains("I would like to enroll this machine into Landbridge.", issued, StringComparison.Ordinal);
+        Assert.DoesNotContain("manage a fleet of remote harnesses", issued, StringComparison.Ordinal);
+        Assert.Contains("/setup/enroll/lbr_es_", issued, StringComparison.Ordinal);
+        Assert.Contains("prompt-card__ask", issued, StringComparison.Ordinal);
+        Assert.Contains("prompt-card__url", issued, StringComparison.Ordinal);
+        Assert.Contains("Copy prompt", issued, StringComparison.Ordinal);
+        Assert.DoesNotContain("landbridged --enroll", issued, StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }
@@ -273,6 +291,17 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         var url = doc.RootElement.GetProperty("url").GetString();
         Assert.Contains("/setup/lbr_s_", url, StringComparison.Ordinal);
         Assert.DoesNotContain("lbr_l_", url, StringComparison.Ordinal);
+        Assert.Equal(ConnectEndpoints.RenderLeadSetupPrompt(url!), doc.RootElement.GetProperty("prompt").GetString());
+        Assert.DoesNotContain("enroll this machine", doc.RootElement.GetProperty("prompt").GetString(), StringComparison.Ordinal);
+
+        var htmlRes = await PostFormAsync(app, "/dashboard/connect/setup-link", new Dictionary<string, string>(), ct);
+        Assert.Equal(HttpStatusCode.OK, htmlRes.StatusCode);
+        var issued = await htmlRes.Content.ReadAsStringAsync(ct);
+        Assert.Contains("I would like to setup Landbridge to help manage a fleet of remote harnesses over MCP.", issued, StringComparison.Ordinal);
+        Assert.Contains("/setup/lbr_s_", issued, StringComparison.Ordinal);
+        Assert.Contains("prompt-card__url", issued, StringComparison.Ordinal);
+        Assert.Contains("Copy prompt", issued, StringComparison.Ordinal);
+        Assert.DoesNotContain("enroll this machine", issued, StringComparison.Ordinal);
 
         using var client = Client(app);
         var first = await client.GetAsync(new Uri(url!), ct);

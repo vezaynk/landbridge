@@ -15,7 +15,7 @@ There is no `/landbridge-enroll` command on this build. No slash command or MCP 
 
 A `landbridged` config that tells a generic daemon how to drive *this* machine's harness. The daemon knows nothing about harnesses, toolchains, or session content — everything specific lives in the config you write.
 
-Name the first profile as `<harness>-<hostname>-<os>` — exact, lowercase, hyphens. Resolve those three from this machine: the harness you just probed (`goose`, `claude`, `codex`, `grok`, `opencode`), `hostname -s` (or the equivalent), and the OS as `linux` / `macos` / `windows`. Examples: `goose-devbox-linux`, `claude-mbp-macos`, `codex-builder-linux`. That name is unique to this box and this harness, so a Lead can target it without hitting a sibling.
+Ask the human what they would like this harness on this machine to be used for. Turn that answer into a short friendly profile name — lowercase, hyphens — that they would recognize in `list_profiles`. The purpose decides the name. If it helps, mix in the harness you just probed (`goose`, `claude`, `codex`, `grok`, `opencode`), the short hostname (`hostname -s`, or the equivalent), and the OS (`linux`, `macos`, or `windows`). `<harness>-<hostname>-<os>` is one shape to offer, as in `goose-devbox-linux`, `claude-mbp-macos`, or `codex-builder-linux`. Write the name they accept. Dispatch matches it exactly, so a Lead can aim a session at this box and this harness.
 
 Then **offer** a group profile that shares the same `spawn` / `prompt` / `follow_up` under a broader name. Ask the human; do not add one silently:
 

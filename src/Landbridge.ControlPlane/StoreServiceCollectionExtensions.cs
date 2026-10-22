@@ -54,6 +54,7 @@ public static class StoreServiceCollectionExtensions
         services.TryAddSingleton(new SessionStorePolicy(
             infrastructureRequeueLimit ?? SessionRecord.DefaultInfrastructureRequeueLimit));
         services.TryAddSingleton<LeadSetupLinkStore>();
+        services.TryAddSingleton<EnrollmentSetupLinkStore>();
         services.TryAddScoped<SessionStore>();
         services.TryAddScoped<FriendlyIds>();
         services.TryAddScoped<TeamForwardUsageService>();

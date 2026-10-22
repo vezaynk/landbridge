@@ -74,7 +74,7 @@ Machines may declare more than one runner profile — a second harness, a restri
 
 Two things to read carefully. **`dispatchable: false` with machines listed is not a problem** — the profile exists and every machine offering it is saturated or not yet ready, so your session will queue and then run; wait rather than re-routing it. **A profile missing from the list entirely is the problem** — nothing declares it, so nothing will ever pick that session up.
 
-Machine-specific names look like `goose-devbox-linux`. Group names like `any-linux` are how you target "any Linux box" without caring which harness. Pick the group name when any matching machine will do; pick the specific name when you need that harness or that box.
+Machine-specific names are the friendly names the operator chose for that box. One shape is `goose-devbox-linux`. Group names like `any-linux` are how you target "any Linux box" without caring which harness. Pick the group name when any matching machine will do; pick the specific name when you need that harness or that box.
 
 It answers routing and only routing — profile names, their machines, and liveness. What those machines are actually running is the Machine Group view, which stays human-only.
 

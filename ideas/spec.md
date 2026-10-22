@@ -508,7 +508,7 @@ Full schema and a worked Claude Code example: `skills/landbridge-enroll/referenc
 | Section | Covers |
 |---|---|
 | `machine` | `work_root` for per-task scratch directories; back-pressure thresholds |
-| `profiles` | Named configurations; at least one required, none reserved as `default`. Enroll convention: `<harness>-<hostname>-<os>`, plus optional group names like `any-linux`. Each carries `spawn`, `prompt`, `follow_up`, `env`, `files`, `hooks`, `stop`, `telemetry`, `logs`. |
+| `profiles` | Named configurations; at least one required, none reserved as `default`. The human names each one for what this harness on this machine is for. `<harness>-<hostname>-<os>` is a shape they may use, and a group name like `any-linux` may sit beside it. Each carries `spawn`, `prompt`, `follow_up`, `env`, `files`, `hooks`, `stop`, `telemetry`, `logs`. |
 | `profiles[].env` | Per-spawn environment map. Values take the same `{…}` substitutions `spawn` does. Applied after the reserved `LANDBRIDGE_*` stamps and before `telemetry.env`. The four names landbridged owns (`LANDBRIDGE_MACHINE_ID`, `LANDBRIDGE_SESSION_ID`, `LANDBRIDGE_WORKER_TOKEN`, `LANDBRIDGE_TRACEPARENT`) are refused at load. |
 | `profiles[].files` | Files written under `{work_dir}` before spawn. Paths are jailed to the work dir after substitution. Prefer this for additive project-local MCP (Grok merges `{cwd}/.grok/config.toml` with `~/.grok`). |
 | `profiles[].hooks` | Argv hooks, never a shell. `before_spawn` is fail-closed; `after_exit` is best-effort. For a harness whose only MCP surface is a user-global file (Codex). |
@@ -544,7 +544,7 @@ Either way it is **not** a terminal. A program that behaves differently because 
 
 **A daemon can drive several harnesses or postures.** Profiles exist for genuinely different setups on one machine: Claude Code alongside Codex, a restricted permission posture for sensitive work, a pinned version being canaried during an upgrade.
 
-A session **must** carry a `profile` string, matched **by exact string equality** at dispatch. The control plane never learns what a profile name means — only whether a machine declares one. There is no reserved `default` and no omit-fallback. A name no machine declares sits visibly undispatchable. This is deliberately not a capability manifest, which §15 still excludes: profiles are identifiers a human chose, not descriptions Landbridge reasons over. Enroll names a box-specific profile `<harness>-<hostname>-<os>` and may also declare a group name such as `any-linux`.
+A session **must** carry a `profile` string, matched **by exact string equality** at dispatch. The control plane never learns what a profile name means — only whether a machine declares one. There is no reserved `default` and no omit-fallback. A name no machine declares sits visibly undispatchable. This is deliberately not a capability manifest, which §15 still excludes: profiles are identifiers a human chose, not descriptions Landbridge reasons over. Enroll asks the human what they want this harness on this machine used for and records the friendly name they accept. `<harness>-<hostname>-<os>` is a suggestion they can mix into that name. A group name such as `any-linux` may be declared beside it.
 
 **Profiles describe how to run an agent, never what kind of work it does.** `profiles: {frontend, backend}` is task routing disguised as machine config, and it puts the control plane back in the business of meaning.
 
