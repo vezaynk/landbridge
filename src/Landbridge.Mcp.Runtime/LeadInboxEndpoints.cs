@@ -12,7 +12,7 @@ namespace Landbridge.Mcp;
 
 /// <summary>
 /// Lead-only HTTP inbox: one JSON snapshot and one SSE feed of the same
-/// snapshot. <c>?teamId=</c> is required (a Team this factory owns). Wakes on
+/// snapshot. <c>?teamId=</c> is required (an id that names a Team). Wakes on
 /// Hub SSE when configured, otherwise <see cref="SessionEventFanout"/>. Each
 /// event is a full Team snapshot, not a delta. Team-wide is identifiers only;
 /// <c>?sessionId=</c> (repeatable) carries bodies and marks unread report mail
@@ -43,10 +43,9 @@ public static class LeadInboxEndpoints
         if (filterOrError.Error is { } bad)
             return bad;
         var filter = filterOrError.Ids;
-        var factory = LandbridgeClaims.AsLeadPrincipal(http.User)!;
-        var team = await RequireOwnedTeamAsync(http, factory, tokens, ids, ct);
+        var team = await RequireTeamAsync(http, tokens, ids, ct);
         if (team is null)
-            return Results.Json(new { error = "teamId is required: a team id from create_team, or one a human gave you" },
+            return Results.Json(new { error = "teamId is required and must name a team on this plane" },
                 statusCode: StatusCodes.Status400BadRequest);
         var actor = filter is { Count: > 0 } ? new Landbridge.Core.LeadClaim(team.Value) : (Landbridge.Core.Actor?)null;
         var hub = http.RequestServices.GetService<HubClient>();
@@ -73,10 +72,9 @@ public static class LeadInboxEndpoints
         if (filterOrError.Error is { } bad)
             return bad;
         var filter = filterOrError.Ids;
-        var factory = LandbridgeClaims.AsLeadPrincipal(http.User)!;
-        var team = await RequireOwnedTeamAsync(http, factory, tokens, ids, ct);
+        var team = await RequireTeamAsync(http, tokens, ids, ct);
         if (team is null)
-            return Results.Json(new { error = "teamId is required: a team id from create_team, or one a human gave you" },
+            return Results.Json(new { error = "teamId is required and must name a team on this plane" },
                 statusCode: StatusCodes.Status400BadRequest);
         var actor = filter is { Count: > 0 } ? new LeadClaim(team.Value) : (Actor?)null;
         http.Response.Headers["X-Accel-Buffering"] = "no";
@@ -170,14 +168,14 @@ public static class LeadInboxEndpoints
         }
     }
 
-    private static async Task<TeamId?> RequireOwnedTeamAsync(
-        HttpContext http, Principal.Lead factory, TokenService tokens, FriendlyIds ids, CancellationToken ct)
+    private static async Task<TeamId?> RequireTeamAsync(
+        HttpContext http, TokenService tokens, FriendlyIds ids, CancellationToken ct)
     {
         var raw = http.Request.Query["teamId"].ToString();
         var team = await ids.TryTeamAsync(raw, ct);
-        if (team is null)
+        if (team is null || !await tokens.TeamExistsAsync(team.Value, ct))
             return null;
-        return await tokens.OwnsTeamAsync(factory.CredentialId, team.Value, ct) ? team : null;
+        return team;
     }
 
     private static IResult? RejectUnlessLead(HttpContext http)

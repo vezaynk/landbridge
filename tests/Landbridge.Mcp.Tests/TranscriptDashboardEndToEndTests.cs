@@ -394,8 +394,9 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         var owned = await GetBearerAsync(coreClient, path, lead, ct);
         Assert.Equal(HttpStatusCode.OK, owned.StatusCode);
         Assert.Contains("lbr_w_deadbeefcafe1234", await owned.Content.ReadAsStringAsync(ct));
-        var denied = await GetBearerAsync(coreClient, path, stranger, ct);
-        Assert.Equal(HttpStatusCode.NotFound, denied.StatusCode);
+        var addressed = await GetBearerAsync(coreClient, path, stranger, ct);
+        Assert.Equal(HttpStatusCode.OK, addressed.StatusCode);
+        Assert.Contains("lbr_w_deadbeefcafe1234", await addressed.Content.ReadAsStringAsync(ct));
     }
 
     // ── Rig ───────────────────────────────────────────────────────────────────

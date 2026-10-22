@@ -59,7 +59,7 @@ public static class CoreWriteEndpoints
 
     /// <summary>
     /// One transcript range, served from the process that holds <c>/runner</c>. A human
-    /// operator or the Lead that owns the session. The body is verbatim harness output
+    /// operator or a live Lead. The session's Team must exist. The body is verbatim harness output
     /// and is not logged. <c>ordinal</c> 0 is the inventory.
     /// </summary>
     private static async Task<IResult> ReadTranscriptAsync(
@@ -87,9 +87,9 @@ public static class CoreWriteEndpoints
         }
 
         var principal = LandbridgeClaims.ToPrincipal(http.User);
-        if (principal is Principal.Lead lead)
+        if (principal is Principal.Lead)
         {
-            if (!await tokens.OwnsTeamAsync(lead.CredentialId, new TeamId(row.TeamId), ct))
+            if (!await tokens.TeamExistsAsync(new TeamId(row.TeamId), ct))
             {
                 return Results.Json(new CoreTranscriptReply("unavailable", Reason: nameof(TranscriptUnavailable.NoSuchSession), Detail: "no such session"),
                     CoreWriteClient.Json, statusCode: StatusCodes.Status404NotFound);
@@ -694,9 +694,9 @@ public static class CoreWriteEndpoints
             var session = await ids.TrySessionAsync(body.SessionId, ct);
             if (team is null || session is null)
                 return Results.Json(new CorePreviewReply(false, Reason: "team and session required"), CoreWriteClient.Json);
-            if (LandbridgeClaims.AsLeadPrincipal(http.User) is { } lead
-                && !await tokens.OwnsTeamAsync(lead.CredentialId, team.Value, ct))
-                return Results.Json(new CorePreviewReply(false, Reason: "not your team"), CoreWriteClient.Json, statusCode: 403);
+            if (LandbridgeClaims.AsLeadPrincipal(http.User) is not null
+                && !await tokens.TeamExistsAsync(team.Value, ct))
+                return Results.Json(new CorePreviewReply(false, Reason: "no team with that id"), CoreWriteClient.Json, statusCode: 404);
             mint = await previews.CreateAsync(team.Value, session.Value, body.ServiceName, policy, ttl, ct);
         }
         var baseUrl = config[PreviewMint.UrlBaseConfigKey]
@@ -737,11 +737,11 @@ public static class CoreWriteEndpoints
         Guid? humanId;
         if (LandbridgeClaims.AsLeadPrincipal(http.User) is { } lead)
         {
-            var owned = await ids.TryTeamAsync(body.TeamId, ct);
-            if (owned is null || !await tokens.OwnsTeamAsync(lead.CredentialId, owned.Value, ct))
-                return Results.Json(new CoreStoreReply("rejected", Reason: "teamId is required and must be owned"), CoreWriteClient.Json, statusCode: 403);
+            var named = await ids.TryTeamAsync(body.TeamId, ct);
+            if (named is null || !await tokens.TeamExistsAsync(named.Value, ct))
+                return Results.Json(new CoreStoreReply("rejected", Reason: "teamId is required and must name a team on this plane"), CoreWriteClient.Json, statusCode: 404);
             role = FrictionReportRow.LeadRole;
-            team = owned.Value.Value;
+            team = named.Value.Value;
             sessionId = null;
             humanId = lead.HumanId;
         }
@@ -861,8 +861,8 @@ public static class CoreWriteEndpoints
         if (lead.Error is { } err)
             return (null, err);
         var team = await ids.TryTeamAsync(teamId, ct);
-        if (team is null || !await tokens.OwnsTeamAsync(lead.Principal!.CredentialId, team.Value, ct))
-            return (null, Results.Json(new CoreStoreReply("rejected", Reason: "this lead credential does not own that team"), CoreWriteClient.Json, statusCode: 403));
+        if (team is null || !await tokens.TeamExistsAsync(team.Value, ct))
+            return (null, Results.Json(new CoreStoreReply("rejected", Reason: "no team with that id"), CoreWriteClient.Json, statusCode: 404));
         return (new LeadClaim(team.Value), null);
     }
 

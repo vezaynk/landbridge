@@ -1,6 +1,5 @@
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
-using Landbridge.Core;
 using Landbridge.Mcp;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
@@ -55,19 +54,15 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
             ? Hub.GetAsync<T>(path, token, RequestAborted)
             : Task.FromResult<T?>(default);
 
-    /// <summary>Null is the instance-wide human view; a list is a Lead's owned Teams.</summary>
+    /// <summary>
+    /// Null is the instance-wide human view. A list is the Teams this Lead
+    /// factory created. Opening a Team by its id is not this list.
+    /// </summary>
     protected IReadOnlyList<Guid>? TeamScope { get; private set; }
 
     /// <summary>Dashboard aliases for <see cref="TeamScope"/>, empty for a human.</summary>
     protected IReadOnlyDictionary<Guid, string> TeamSlugs { get; private set; } =
         new Dictionary<Guid, string>();
-
-    protected bool OperatorMayAccess(TeamId team) => Principal switch
-    {
-        Principal.Human => true,
-        Principal.Lead => TeamScope is not null && TeamScope.Contains(team.Value),
-        _ => false,
-    };
 
     protected override void OnInitialized()
     {

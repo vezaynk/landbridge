@@ -45,8 +45,9 @@ public sealed class HubAuthenticationHandler(
 }
 
 /// <summary>
-/// Read authorization for one Hub request. Human is instance-wide. Lead is
-/// owned Teams. Worker is that session. Machine tokens are refused.
+/// Read authorization for one Hub request. Human is instance-wide. A Lead's
+/// unfiltered lists are the Teams that factory created; a named team id is
+/// any Team that exists. Worker is that session. Machine tokens are refused.
 /// </summary>
 public sealed class HubCaller
 {
@@ -92,17 +93,26 @@ public sealed class HubCaller
         }
     }
 
-    public bool MayTeam(Guid teamId) => Principal switch
+    /// <summary>
+    /// A named Team. Humans may name any id. A Lead may name a Team that
+    /// exists. A worker may name only its own Team. List scope stays on
+    /// <see cref="Teams"/>.
+    /// </summary>
+    public async Task<bool> MayTeamAsync(LandbridgeDbContext db, Guid teamId, CancellationToken ct)
     {
-        Principal.Human => true,
-        Principal.Lead => Teams is not null && Teams.Contains(teamId),
-        Principal.Worker => WorkerTeam == teamId,
-        _ => false,
-    };
+        if (Principal is Principal.Human)
+            return true;
+        if (Principal is Principal.Worker)
+            return WorkerTeam == teamId;
+        if (Principal is not Principal.Lead)
+            return false;
+        return await db.LeadTeams.AsNoTracking().AnyAsync(t => t.TeamId == teamId, ct);
+    }
 
-    public bool MaySession(Guid sessionId, Guid teamId) => Principal is Principal.Worker
-        ? WorkerSession == sessionId
-        : MayTeam(teamId);
+    public Task<bool> MaySessionAsync(LandbridgeDbContext db, Guid sessionId, Guid teamId, CancellationToken ct) =>
+        Principal is Principal.Worker
+            ? Task.FromResult(WorkerSession == sessionId)
+            : MayTeamAsync(db, teamId, ct);
 
     public bool MayMachines => Principal is Principal.Human or Principal.Lead;
 
@@ -198,7 +208,7 @@ public sealed class HubCaller
                 .Where(g => g.ForwardId == entityId)
                 .Select(g => (Guid?)g.TeamId)
                 .FirstOrDefaultAsync(ct);
-            return team is { } t && MayTeam(t);
+            return team is { } t && await MayTeamAsync(db, t, ct);
         }
 
         if (topic is HubQueueRow.CommandsTopic)
@@ -207,7 +217,7 @@ public sealed class HubCaller
                 .Where(c => c.Id == entityId)
                 .Select(c => new { c.SessionId, c.TeamId })
                 .FirstOrDefaultAsync(ct);
-            return cmd is not null && MaySession(cmd.SessionId, cmd.TeamId);
+            return cmd is not null && await MaySessionAsync(db, cmd.SessionId, cmd.TeamId, ct);
         }
 
         if (topic is HubQueueRow.PreviewsTopic)
@@ -216,19 +226,21 @@ public sealed class HubCaller
                 .Where(p => p.Id == entityId)
                 .Select(p => new { p.SessionId, p.TeamId })
                 .FirstOrDefaultAsync(ct);
-            return row is not null && MaySession(row.SessionId, row.TeamId);
+            return row is not null && await MaySessionAsync(db, row.SessionId, row.TeamId, ct);
         }
 
         var session = await db.Sessions.AsNoTracking()
             .Where(s => s.Id == entityId)
             .Select(s => new { s.Id, s.TeamId })
             .FirstOrDefaultAsync(ct);
-        return session is not null && MaySession(session.Id, session.TeamId);
+        return session is not null && await MaySessionAsync(db, session.Id, session.TeamId, ct);
     }
 
     /// <summary>
-    /// Restrict a <c>hub_queue</c> tail to entities this principal may GET.
-    /// Human is unfiltered. Lead is owned Teams. Worker is that session.
+    /// Restrict an unfiltered <c>hub_queue</c> tail to entities this principal
+    /// may list. Human is unfiltered. A Lead's tail is the Teams that factory
+    /// created. A named row is authorized before the tail and is not passed
+    /// through here. Worker is that session.
     /// </summary>
     public IQueryable<HubQueueRow> ScopeQueue(
         LandbridgeDbContext db, IQueryable<HubQueueRow> q, string topic)

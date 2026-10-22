@@ -1,19 +1,9 @@
 <DashboardDocument Title="Could not issue a Lead token" ActiveKey="connect">
 <h1>Could not issue a Lead token</h1>
 <p class="sub">@Reason</p>
-@if (ShowTakeoverHint)
-{
-    <section>
-        <p>One live owner per Team. Takeover moves this Team to the new token.
-            A factory that owned only this Team is revoked, and its next call names
-            who took it. A factory that still owns another Team stays live and loses
-            only this one.</p>
-    </section>
-}
 <p><a href="/dashboard/connect">← back to Connect</a></p>
 </DashboardDocument>
 
 @code {
     [Parameter] public string Reason { get; set; } = "";
-    [Parameter] public bool ShowTakeoverHint { get; set; }
 }

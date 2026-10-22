@@ -86,7 +86,10 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.DoesNotContain("claim_lead", html, StringComparison.Ordinal);
         Assert.DoesNotContain("/landbridge-lead", html, StringComparison.Ordinal);
         Assert.Contains("teamId", html, StringComparison.Ordinal);
-        Assert.Contains("owned only this Team", html, StringComparison.Ordinal);
+        Assert.Contains("factory, not a Team", html, StringComparison.Ordinal);
+        Assert.Contains("addressed by its id", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Take over", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("takeover", html, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("permission-level", html, StringComparison.Ordinal);
         Assert.DoesNotContain("claim one below", html, StringComparison.Ordinal);
 
@@ -231,7 +234,7 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Human_claims_a_new_team_and_refuses_a_second_claimant_without_takeover()
+    public async Task Human_claims_a_new_team_and_refuses_a_second_token_for_it()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -251,11 +254,12 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
         Assert.Contains("already led", await second.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
 
-        var takeover = await PostAsync(app, "/dashboard/connect/claim", new { teamId, takeover = true }, ct);
-        Assert.Equal(HttpStatusCode.Created, takeover.StatusCode);
-        using var took = JsonDocument.Parse(await takeover.Content.ReadAsStringAsync(ct));
-        Assert.StartsWith("lbr_l_", took.RootElement.GetProperty("token").GetString());
-        Assert.Equal(teamId, took.RootElement.GetProperty("teamId").GetString());
+        var again = await PostAsync(app, "/dashboard/connect/claim", new { teamId, takeover = true }, ct);
+        Assert.Equal(HttpStatusCode.Conflict, again.StatusCode);
+        var againBody = await again.Content.ReadAsStringAsync(ct);
+        Assert.Contains("already led", againBody, StringComparison.Ordinal);
+        Assert.Contains("address that Team by its id", againBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("lbr_l_", againBody, StringComparison.Ordinal);
 
         var bad = await PostFormAsync(app, "/dashboard/connect/claim",
             new Dictionary<string, string> { ["teamId"] = "not-a-team" }, ct);

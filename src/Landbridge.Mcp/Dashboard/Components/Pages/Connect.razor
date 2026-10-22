@@ -10,10 +10,10 @@
 else if (Ready && Principal is Principal.Lead)
 {
     <h1>Connect</h1>
-    <p class="sub">This session is a Lead factory. Paste that token into a harness, or open a Team it owns.</p>
+    <p class="sub">This session is a Lead factory. Paste that token into a harness, or open a Team by its id.</p>
 
     <section class="howto">
-        <h2>Teams this factory owns</h2>
+        <h2>Teams this factory created</h2>
         @if (TeamScope is { Count: > 0 })
         {
             <p>
@@ -66,10 +66,7 @@ else if (Ready)
             <input id="teamId" type="text" name="teamId" class="mono"
                    spellcheck="false" autocomplete="off"
                    placeholder="leave blank to start a new Team" />
-            <label class="check">
-                <input type="checkbox" name="takeover" value="true" />
-                <span>Take over if this Team already has a Lead. The Team moves to the new token. A factory that owned only this Team is revoked, and its next call names who took it. A factory that still owns another Team stays live and loses only this one.</span>
-            </label>
+            <p class="nt">A Team that already has a Lead is addressed by its id from a harness that already holds a token.</p>
             <button type="submit">Issue Lead token</button>
             <button type="submit" formaction="/dashboard/connect/setup-link">
                 One-time setup link
