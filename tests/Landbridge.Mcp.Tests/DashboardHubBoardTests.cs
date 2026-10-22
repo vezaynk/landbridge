@@ -63,6 +63,98 @@ public sealed class DashboardHubBoardTests
         await app.StopAsync(cts.Token);
     }
 
+    [Fact]
+    public async Task An_empty_team_is_left_off_the_dashboard_list()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var empty = Guid.NewGuid();
+        var busy = Guid.NewGuid();
+        var serving = Guid.NewGuid();
+        var now = DateTimeOffset.Parse("2026-10-21T20:00:00Z");
+
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        await using var app = builder.Build();
+        app.MapGet("/teams", () => new object[]
+        {
+            Team(empty, "empty-bush-8150", now),
+            Team(busy, "quiet-river-0001", now),
+            Team(serving, "bright-harbor-0042", now),
+        });
+        app.MapGet("/sessions", () => new object[] { Session(busy, now) });
+        app.MapGet("/services", () => new object[]
+        {
+            new
+            {
+                seq = 1L,
+                sessionId = Guid.NewGuid(),
+                teamId = serving,
+                name = "web",
+                port = 8080,
+                createdAt = now,
+            },
+        });
+        await app.StartAsync(cts.Token);
+
+        var http = new HttpClient
+        {
+            BaseAddress = new Uri(app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal))),
+        };
+        var hub = new HubClient(http, NullLogger<HubClient>.Instance);
+
+        var teams = await DashboardHubBoard.TryTeamsAsync(hub, "t", teamScope: null, cts.Token);
+        Assert.NotNull(teams);
+        Assert.Equal([busy, serving], teams.Select(t => t.TeamId).ToArray());
+        Assert.Equal(1, teams.Single(t => t.TeamId == busy).TotalSessions);
+        Assert.Equal(1, teams.Single(t => t.TeamId == serving).ServiceCount);
+
+        await app.StopAsync(cts.Token);
+    }
+
+    private static object Team(Guid teamId, string slug, DateTimeOffset createdAt) =>
+        new
+        {
+            teamId,
+            slug,
+            leadCredentialId = Guid.NewGuid(),
+            createdAt,
+            forwardedBytes = 0L,
+            bytesReportedAt = (DateTimeOffset?)null,
+        };
+
+    private static object Session(Guid teamId, DateTimeOffset at) =>
+        new
+        {
+            id = Guid.NewGuid(),
+            slug = "amber-session-0001",
+            teamId,
+            teamSlug = "quiet-river-0001",
+            profile = "codex-apphost-linux",
+            state = "Working",
+            occupancyDesired = "Running",
+            occupancyObserved = "Running",
+            health = "Ok",
+            hidden = false,
+            messageState = "Idle",
+            pendingSpawn = (string?)null,
+            reportUnread = false,
+            messageId = (Guid?)null,
+            inputKind = (string?)null,
+            blockedAt = (DateTimeOffset?)null,
+            parkMachine = (Guid?)null,
+            currentInstanceId = (Guid?)null,
+            messageOpenedAt = at,
+            lastMessageClosedAt = (DateTimeOffset?)null,
+            @namespace = "demo",
+            attempt = 1,
+            hasReport = false,
+            hasQuestion = false,
+            continuesSessionId = (Guid?)null,
+            completionProvenance = (string?)null,
+            infrastructureRequeues = 0,
+            lastRequeueReason = (string?)null,
+        };
+
     private static object Machine(
         Guid id, string slug, bool ready, bool live, DateTimeOffset spoke, bool underBackPressure = false) =>
         new

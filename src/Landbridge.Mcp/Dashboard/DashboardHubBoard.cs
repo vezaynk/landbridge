@@ -246,7 +246,7 @@ internal static class DashboardHubBoard
                 open, LeadHumanId: null, LeadSince: t.CreatedAt, lastN, idle,
                 t.ForwardedBytes > 0 ? new TeamForwardUsageView(t.ForwardedBytes, t.BytesReportedAt ?? t.CreatedAt) : null,
                 t.Slug);
-        }).ToList();
+        }).Where(t => !t.IsEmpty).ToList();
     }
 
     public static async Task<LeadMachineBinding?> TryBindingAsync(
