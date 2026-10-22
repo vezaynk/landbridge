@@ -192,7 +192,7 @@ internal static class ConnectEndpoints
 
              `--auth-url` is the authorization server, where `POST /enroll` lives: `{authUrl}`.
 
-             `--name` is the Machine Group label (the short hostname if you omit it), not a runner profile. After you probe, name profiles `<harness>-<hostname>-<os>`.
+             `--name` is the Machine Group label (the short hostname if you omit it), not a runner profile. When you write the config, the skill below is how you and the human name each profile.
 
              Ask which state dir to use before you exchange. Omit `--state-dir` to use the default: `$LANDBRIDGE_STATE_DIR`, else `$XDG_STATE_HOME/landbridge`, else `~/.landbridge`. Pass `--state-dir /var/lib/landbridged` only when the human is installing a system service and will start the daemon with that same path. The path you enroll with is the path you start with.
 
