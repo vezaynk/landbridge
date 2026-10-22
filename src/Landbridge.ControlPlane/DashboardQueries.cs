@@ -159,9 +159,10 @@ public sealed partial class DashboardQueries(
     // ── Team view (§12) ───────────────────────────────────────────────────────
 
     /// <summary>
-    /// Every Team as a one-line overview, sorted so idle Teams drift to the bottom
-    /// (§12). A Team exists if it owns any task or holds a live Lead claim. Carries its
-    /// reported relay bytes (§9.10, measured but best-effort).
+    /// Teams that have a session or a registered service, as a one-line overview,
+    /// sorted so idle Teams drift to the bottom (§12). A Team that only holds a
+    /// Lead claim is left off the list. Carries its reported relay bytes (§9.10,
+    /// measured but best-effort).
     /// </summary>
     /// <param name="teamScope">The Teams this read may see, or null for the instance-wide
     /// human view (§12 — see <see cref="GetInboxAsync"/> for why the parameter exists). A
@@ -260,7 +261,10 @@ public sealed partial class DashboardQueries(
         }
 
         // Idle Teams to the bottom (§12), otherwise most-recently-active first.
+        // A claim with no session and no service is an empty Team; the dashboard
+        // has nothing to show for it.
         return overviews
+            .Where(t => !t.IsEmpty)
             .OrderBy(t => t.IsIdle)
             .ThenByDescending(t => t.LastActivity ?? DateTimeOffset.MinValue)
             .ToList();
@@ -916,7 +920,13 @@ public sealed record TeamOverview(
     DateTimeOffset? LastActivity,
     bool IsIdle,
     TeamForwardUsageView? ForwardUsage = null,
-    string Slug = "");
+    string Slug = "")
+{
+    /// <summary>
+    /// A Lead claim with nothing on it. The dashboard list omits these.
+    /// </summary>
+    public bool IsEmpty => TotalSessions == 0 && ServiceCount == 0;
+}
 
 /// <summary>One Team in full — the §4 reattachment surface as structured data (§12).</summary>
 public sealed record TeamDetail(
