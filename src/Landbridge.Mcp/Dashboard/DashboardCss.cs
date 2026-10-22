@@ -195,6 +195,30 @@ internal static class DashboardCss
     .secret textarea {
       min-height: 22rem; white-space: pre; resize: vertical; display: block;
     }
+    .prompt-card { position: relative; max-width: 40rem; }
+    .prompt-card__ask {
+      margin: 0 0 14px; font: 500 16px/1.45 var(--font-body); color: var(--ink);
+      text-wrap: pretty;
+    }
+    .prompt-card__cue {
+      margin: 0 0 6px; font: 600 11px/1.3 var(--font-body); letter-spacing: 0.04em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .prompt-card__url {
+      margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+      background: var(--well); color: var(--ink); font: 12px/1.5 var(--font-mono);
+      overflow-wrap: anywhere;
+    }
+    .prompt-card__source {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: pre-wrap; border: 0;
+    }
+    .secret textarea.prompt-card__source { min-height: 0; width: 1px; resize: none; }
+    .prompt-card__copy {
+      margin-top: 12px; padding: 7px 14px; border: none; border-radius: 6px;
+      background: var(--accent); color: var(--accent-ink); font: inherit;
+      font-weight: 600; cursor: pointer;
+    }
     .connect-claim label, .connect-enroll label { display: block; font-weight: 600; margin: 10px 0 6px; }
     .connect-claim input[type=text] {
       width: 100%; max-width: 360px; padding: 8px 10px; border: 1px solid var(--line);

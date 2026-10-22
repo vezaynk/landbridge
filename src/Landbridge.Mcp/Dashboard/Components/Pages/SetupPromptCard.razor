@@ -1,0 +1,21 @@
+<section class="secret prompt-card">
+    <p class="prompt-card__ask">@Ask</p>
+    <p class="prompt-card__cue">Follow the instructions here</p>
+    <p class="prompt-card__url">@ShownUrl</p>
+    <textarea id="prompt" class="prompt-card__source" readonly aria-hidden="true" tabindex="-1">@Prompt</textarea>
+    <button type="button" class="prompt-card__copy" onclick="navigator.clipboard.writeText(document.getElementById('prompt').value).then(() => { this.textContent = 'Copied'; })">Copy prompt</button>
+    <p class="nt">@ChildContent</p>
+</section>
+
+@code {
+    private const string Cue = "Follow the instructions here:";
+
+    [Parameter, EditorRequired] public string Prompt { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private int CueAt => Prompt.IndexOf(Cue, StringComparison.Ordinal);
+
+    private string Ask => CueAt < 0 ? Prompt : Prompt[..CueAt].Trim();
+
+    private string ShownUrl => CueAt < 0 ? "" : Prompt[(CueAt + Cue.Length)..].Trim();
+}

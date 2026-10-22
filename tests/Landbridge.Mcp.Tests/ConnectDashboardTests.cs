@@ -222,7 +222,9 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("I would like to enroll this machine into Landbridge.", issued, StringComparison.Ordinal);
         Assert.DoesNotContain("manage a fleet of remote harnesses", issued, StringComparison.Ordinal);
         Assert.Contains("/setup/enroll/lbr_es_", issued, StringComparison.Ordinal);
-        Assert.Contains("<textarea", issued, StringComparison.Ordinal);
+        Assert.Contains("prompt-card__ask", issued, StringComparison.Ordinal);
+        Assert.Contains("prompt-card__url", issued, StringComparison.Ordinal);
+        Assert.Contains("Copy prompt", issued, StringComparison.Ordinal);
         Assert.DoesNotContain("landbridged --enroll", issued, StringComparison.Ordinal);
 
         await app.StopAsync(ct);
@@ -297,6 +299,8 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         var issued = await htmlRes.Content.ReadAsStringAsync(ct);
         Assert.Contains("I would like to setup Landbridge to help manage a fleet of remote harnesses over MCP.", issued, StringComparison.Ordinal);
         Assert.Contains("/setup/lbr_s_", issued, StringComparison.Ordinal);
+        Assert.Contains("prompt-card__url", issued, StringComparison.Ordinal);
+        Assert.Contains("Copy prompt", issued, StringComparison.Ordinal);
         Assert.DoesNotContain("enroll this machine", issued, StringComparison.Ordinal);
 
         using var client = Client(app);

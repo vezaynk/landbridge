@@ -4,13 +4,11 @@
     The first GET returns markdown that contains the factory token and then 404s.
     Pass that Team id as <span class="mono">teamId</span>, or call
     <span class="mono">create_team</span> for another.</p>
-<section class="secret">
-    <label for="prompt">Prompt</label>
-    <textarea id="prompt" class="mono" readonly spellcheck="false" rows="4">@Prompt</textarea>
-    <p class="nt">Expires @ExpiresAt.ToString("u"). Paste this into the harness
-        that will lead the Team. Do not open the link yourself — a preview or
-        reload burns it.</p>
-</section>
+<SetupPromptCard Prompt="@Prompt">
+    Expires @ExpiresAt.ToString("u"). Paste this into the harness
+    that will lead the Team. Do not open the link yourself — a preview or
+    reload burns it.
+</SetupPromptCard>
 <p><a href="@TeamHref(TeamId, TeamSlug)">Open this Team</a>
     · <a href="/dashboard/connect">← back to Connect</a></p>
 </DashboardDocument>
