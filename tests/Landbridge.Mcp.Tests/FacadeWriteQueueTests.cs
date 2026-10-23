@@ -99,7 +99,7 @@ public sealed class FacadeWriteQueueTests(PostgresFixture pg) : IAsyncLifetime
         var tokens = new TokenService(db, TimeProvider.System);
         var human = await tokens.IssueHumanSessionAsync(ct);
         var claimed = Assert.IsType<LeadClaimResult.Claimed>(
-            await tokens.ClaimLeadAsync(human.Token, team, takeover: false, ct));
+            await tokens.ClaimLeadAsync(human.Token, team, ct));
         return claimed.Token.Token;
     }
 

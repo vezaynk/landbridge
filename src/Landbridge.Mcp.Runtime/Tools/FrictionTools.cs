@@ -30,7 +30,7 @@ public sealed class FrictionTools(FrictionStore store, TokenService tokens, Frie
         [Description("What felt wrong in Landbridge and how it could be improved. Specific: which " +
                      "tool or loop, what you expected, what happened. Not the assignment. Capped at 16 KB.")]
         string message,
-        [Description("Lead only: the Team this report is about. From create_team, or a human-supplied id. " +
+        [Description("Lead only: the Team this report is about. Any id that names a Team. " +
                      "Workers omit this — their token already names the Team.")]
         string? teamId = null,
         CancellationToken ct = default)
@@ -49,15 +49,15 @@ public sealed class FrictionTools(FrictionStore store, TokenService tokens, Frie
         Guid? humanId;
         if (LandbridgeClaims.AsLeadPrincipal(user) is { } lead)
         {
-            var owned = await ids.TryTeamAsync(teamId, ct);
-            if (owned is null || !await tokens.OwnsTeamAsync(lead.CredentialId, owned.Value, ct))
+            var named = await ids.TryTeamAsync(teamId, ct);
+            if (named is null || !await tokens.TeamExistsAsync(named.Value, ct))
             {
                 throw new McpException(
-                    "teamId is required for a Lead and must be a team this credential owns; " +
+                    "teamId is required for a Lead and must name a team on this plane; " +
                     "create_team or use a team id you were given.");
             }
             role = FrictionReportRow.LeadRole;
-            team = owned.Value.Value;
+            team = named.Value.Value;
             sessionId = null;
             humanId = lead.HumanId;
         }

@@ -192,7 +192,7 @@ public sealed class SplitHostSurfaceTests(PostgresFixture pg) : IAsyncLifetime
         var tokens = new TokenService(db, TimeProvider.System);
         var human = await tokens.IssueHumanSessionAsync(ct);
         var claimed = Assert.IsType<LeadClaimResult.Claimed>(
-            await tokens.ClaimLeadAsync(human.Token, TeamId.New(), takeover: false, ct));
+            await tokens.ClaimLeadAsync(human.Token, TeamId.New(), ct));
         return claimed.Token.Token;
     }
 

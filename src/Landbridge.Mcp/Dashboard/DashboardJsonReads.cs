@@ -107,8 +107,8 @@ internal static class DashboardJsonReads
             if (principal is not Principal.Human)
             {
                 await WriteError(http, 403,
-                    "the machine group is a human-operator view; a Lead session sees its owned Teams "
-                    + "on /dashboard/teams and through get_team_state");
+                    "the machine group is a human-operator view; a Lead addresses a Team by its id "
+                    + "on /dashboard/teams/{id} and through get_team_state");
                 return true;
             }
             var machines = hub is not null
@@ -141,12 +141,6 @@ internal static class DashboardJsonReads
             {
                 http.Response.StatusCode = 404;
                 await http.Response.WriteAsJsonAsync(new { error = "no such team" }, DashboardNegotiate.Json, ct);
-                return true;
-            }
-            if (principal is Principal.Lead
-                && (teamScope is null || !teamScope.Contains(id)))
-            {
-                await WriteError(http, 403, "this session may only read a Team it owns");
                 return true;
             }
             var team = await queries.GetTeamAsync(id, ct);

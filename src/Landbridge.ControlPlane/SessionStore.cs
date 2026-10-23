@@ -1065,8 +1065,7 @@ public sealed class SessionStore(
     /// The Team view read (§10, §12): task counts by state plus a per-task
     /// structural summary, scoped to one Team. A pure read — it runs no
     /// transition and returns no prose (§10). The caller's Team is the
-    /// <c>teamId</c> it passed after an ownership check, so a Lead only ever
-    /// sees a Team it owns.
+    /// <c>teamId</c> it passed. The id is the address.
     /// </summary>
     public async Task<TeamStateView> GetTeamStateAsync(TeamId team, CancellationToken ct = default)
     {

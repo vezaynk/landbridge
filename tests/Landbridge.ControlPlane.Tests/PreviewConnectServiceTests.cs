@@ -147,7 +147,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     }
 
     [SkippableFact]
-    public async Task Gated_refuses_no_session_bad_session_and_a_wrong_team_lead()
+    public async Task Gated_refuses_no_session_and_a_bad_session_and_a_live_lead_may_confirm()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
@@ -164,14 +164,21 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         Assert.IsType<PreviewConnectResult.Unauthorized>(
             await connect.ConnectAsync(mint.Label, "lbr_not_a_real_token", null, RelayUrl));
 
-        // A Lead scoped to a different Team is not an operator for THIS preview.
-        var human = await tokens.IssueHumanSessionAsync();
-        var otherLead = (LeadClaimResult.Claimed)await tokens.ClaimLeadAsync(human.Token, TeamId.New());
-        Assert.IsType<PreviewConnectResult.Unauthorized>(
+        // A live Lead addresses the preview's Team by the mapping. It does not
+        // have to be the factory whose list includes that Team. The Team row
+        // has to exist, which the holder's claim is.
+        var holder = await tokens.IssueHumanSessionAsync();
+        Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(holder.Token, team));
+        var otherHuman = await tokens.IssueHumanSessionAsync();
+        var otherLead = (LeadClaimResult.Claimed)await tokens.ClaimLeadAsync(otherHuman.Token, TeamId.New());
+        var est = Assert.IsType<PreviewConnectResult.Established>(
             await connect.ConnectAsync(mint.Label, otherLead.Token.Token, null, RelayUrl));
-
-        // No gated refusal ever armed a producer.
-        Assert.Empty(sent);
+        Assert.Equal(RelayUrl, est.RelayUrl);
+        Assert.False(string.IsNullOrEmpty(est.Grant));
+        var cmd = sent.Single();
+        Assert.Equal(RelayTunnel.ProducerRole, cmd.Role);
+        Assert.Equal(est.Grant, cmd.Grant);
+        Assert.Equal(est.ForwardId, cmd.ForwardId);
     }
 
     [SkippableFact]

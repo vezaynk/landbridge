@@ -38,10 +38,10 @@ internal static class DashboardHubBoard
         var teams = await teamsTask ?? [];
         var relayBytes = teams.Sum(t => t.ForwardedBytes);
 
-        if (teamScope is { } scope)
-            sessions = sessions.Where(s => scope.Contains(s.TeamId)).ToList();
         if (teamId is { } tid)
             sessions = sessions.Where(s => s.TeamId == tid).ToList();
+        else if (teamScope is { } scope)
+            sessions = sessions.Where(s => scope.Contains(s.TeamId)).ToList();
 
         var windowStart = now - window;
         var liveBySession = new Dictionary<Guid, Guid>();

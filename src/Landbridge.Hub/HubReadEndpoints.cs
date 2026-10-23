@@ -38,19 +38,20 @@ public static class HubReadEndpoints
 
     private static async Task<IResult> ListSessionsAsync(
         HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
-        string? teamId, bool hidden = false, CancellationToken ct = default)
+        LandbridgeDbContext db, string? teamId, bool hidden = false, CancellationToken ct = default)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        var team = await ResolveTeamAsync(ids, teamId, caller, db, ct);
         if (team.Error is { } teamErr)
             return teamErr;
         return Json(await reads.SessionsAsync(caller, team.Id, hidden, ct));
     }
 
     private static async Task<IResult> GetSessionAsync(
-        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids,
+        LandbridgeDbContext db, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
@@ -59,14 +60,14 @@ public static class HubReadEndpoints
         if (session.Error is { } sidErr)
             return sidErr;
         var doc = await reads.SessionAsync(session.Id!.Value, ct);
-        if (doc is null || !caller.MaySession(doc.Id, doc.TeamId))
+        if (doc is null || !await caller.MaySessionAsync(db, doc.Id, doc.TeamId, ct))
             return NotFound();
         return Json(doc);
     }
 
     private static async Task<IResult> GetLogAsync(
         HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids,
-        int? limit, CancellationToken ct)
+        LandbridgeDbContext db, int? limit, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
@@ -75,13 +76,14 @@ public static class HubReadEndpoints
         if (session.Error is { } sidErr)
             return sidErr;
         var row = await reads.SessionAsync(session.Id!.Value, ct);
-        if (row is null || !caller.MaySession(row.Id, row.TeamId))
+        if (row is null || !await caller.MaySessionAsync(db, row.Id, row.TeamId, ct))
             return NotFound();
         return Json(await reads.LogAsync(session.Id!.Value, limit ?? HubReads.DefaultLimit, ct) ?? []);
     }
 
     private static async Task<IResult> GetExchangeAsync(
-        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids,
+        LandbridgeDbContext db, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
@@ -90,14 +92,15 @@ public static class HubReadEndpoints
         if (session.Error is { } sidErr)
             return sidErr;
         var row = await reads.SessionAsync(session.Id!.Value, ct);
-        if (row is null || !caller.MaySession(row.Id, row.TeamId))
+        if (row is null || !await caller.MaySessionAsync(db, row.Id, row.TeamId, ct))
             return NotFound();
         var exchange = await reads.ExchangeAsync(session.Id!.Value, ct);
         return exchange is null ? NotFound() : Json(exchange);
     }
 
     private static async Task<IResult> ListSessionServicesAsync(
-        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids,
+        LandbridgeDbContext db, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
@@ -106,19 +109,19 @@ public static class HubReadEndpoints
         if (session.Error is { } sidErr)
             return sidErr;
         var row = await reads.SessionAsync(session.Id!.Value, ct);
-        if (row is null || !caller.MaySession(row.Id, row.TeamId))
+        if (row is null || !await caller.MaySessionAsync(db, row.Id, row.TeamId, ct))
             return NotFound();
         return Json(await reads.ServicesAsync(caller, teamId: null, session.Id, ct));
     }
 
     private static async Task<IResult> ListServicesAsync(
         HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
-        string? teamId, string? sessionId, CancellationToken ct)
+        LandbridgeDbContext db, string? teamId, string? sessionId, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        var team = await ResolveTeamAsync(ids, teamId, caller, db, ct);
         if (team.Error is { } teamErr)
             return teamErr;
         var session = await ResolveSessionAsync(ids, sessionId, ct);
@@ -129,25 +132,26 @@ public static class HubReadEndpoints
 
     private static async Task<IResult> ListForwardsAsync(
         HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
-        string? teamId, CancellationToken ct)
+        LandbridgeDbContext db, string? teamId, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        var team = await ResolveTeamAsync(ids, teamId, caller, db, ct);
         if (team.Error is { } teamErr)
             return teamErr;
         return Json(await reads.ForwardsAsync(caller, team.Id, ct));
     }
 
     private static async Task<IResult> GetForwardAsync(
-        HttpContext http, TokenService tokens, Guid id, HubReads reads, CancellationToken ct)
+        HttpContext http, TokenService tokens, Guid id, HubReads reads,
+        LandbridgeDbContext db, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
         var doc = await reads.ForwardAsync(id, ct);
-        if (doc is null || !caller.MayTeam(doc.TeamId))
+        if (doc is null || !await caller.MayTeamAsync(db, doc.TeamId, ct))
             return NotFound();
         if (caller.Principal is Principal.Worker
             && doc.ProducerSessionId != caller.WorkerSession
@@ -158,25 +162,26 @@ public static class HubReadEndpoints
 
     private static async Task<IResult> ListPreviewsAsync(
         HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
-        string? teamId, CancellationToken ct)
+        LandbridgeDbContext db, string? teamId, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        var team = await ResolveTeamAsync(ids, teamId, caller, db, ct);
         if (team.Error is { } teamErr)
             return teamErr;
         return Json(await reads.PreviewsAsync(caller, team.Id, ct));
     }
 
     private static async Task<IResult> GetPreviewAsync(
-        HttpContext http, TokenService tokens, Guid id, HubReads reads, CancellationToken ct)
+        HttpContext http, TokenService tokens, Guid id, HubReads reads,
+        LandbridgeDbContext db, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
         var doc = await reads.PreviewAsync(id, ct);
-        if (doc is null || !caller.MaySession(doc.SessionId, doc.TeamId))
+        if (doc is null || !await caller.MaySessionAsync(db, doc.SessionId, doc.TeamId, ct))
             return NotFound();
         return Json(doc);
     }
@@ -270,14 +275,15 @@ public static class HubReadEndpoints
     }
 
     private static async Task<IResult> GetTeamAsync(
-        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids,
+        LandbridgeDbContext db, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
         if (caller.Principal is Principal.Worker)
             return HubCaller.Forbid();
-        var team = await ResolveTeamAsync(ids, id, caller, ct, required: true);
+        var team = await ResolveTeamAsync(ids, id, caller, db, ct, required: true);
         if (team.Error is { } teamErr)
             return teamErr;
         var doc = await reads.TeamAsync(team.Id!.Value, ct);
@@ -286,14 +292,14 @@ public static class HubReadEndpoints
 
     private static async Task<IResult> ListFrictionAsync(
         HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
-        string? teamId, CancellationToken ct)
+        LandbridgeDbContext db, string? teamId, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
         if (caller.Principal is Principal.Worker)
             return HubCaller.Forbid();
-        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        var team = await ResolveTeamAsync(ids, teamId, caller, db, ct);
         if (team.Error is { } teamErr)
             return teamErr;
         return Json(await reads.FrictionAsync(caller, team.Id, ct));
@@ -301,14 +307,14 @@ public static class HubReadEndpoints
 
     private static async Task<IResult> ListLeadEventsAsync(
         HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
-        string? teamId, CancellationToken ct)
+        LandbridgeDbContext db, string? teamId, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
         if (caller.Principal is Principal.Worker)
             return HubCaller.Forbid();
-        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        var team = await ResolveTeamAsync(ids, teamId, caller, db, ct);
         if (team.Error is { } teamErr)
             return teamErr;
         return Json(await reads.LeadEventsAsync(caller, team.Id, ct));
@@ -316,25 +322,26 @@ public static class HubReadEndpoints
 
     private static async Task<IResult> ListCommandsAsync(
         HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
-        string? teamId, string? status, CancellationToken ct)
+        LandbridgeDbContext db, string? teamId, string? status, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        var team = await ResolveTeamAsync(ids, teamId, caller, db, ct);
         if (team.Error is { } teamErr)
             return teamErr;
         return Json(await reads.CommandsAsync(caller, team.Id, status, ct));
     }
 
     private static async Task<IResult> GetCommandAsync(
-        HttpContext http, TokenService tokens, HubReads reads, Guid id, CancellationToken ct)
+        HttpContext http, TokenService tokens, HubReads reads, Guid id,
+        LandbridgeDbContext db, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
         var doc = await reads.CommandAsync(id, ct);
-        if (doc is null || !caller.MayTeam(doc.TeamId))
+        if (doc is null || !await caller.MayTeamAsync(db, doc.TeamId, ct))
             return NotFound();
         if (caller.Principal is Principal.Worker && doc.SessionId != caller.WorkerSession)
             return NotFound();
@@ -354,12 +361,12 @@ public static class HubReadEndpoints
         TypedResults.Json(new { error = "invalid id" }, HubEndpoints.Json, statusCode: StatusCodes.Status400BadRequest);
 
     private static async Task<(Guid? Id, IResult? Error)> ResolveTeamAsync(
-        FriendlyIds ids, string? text, HubCaller caller, CancellationToken ct, bool required = false)
+        FriendlyIds ids, string? text, HubCaller caller, LandbridgeDbContext db, CancellationToken ct, bool required = false)
     {
         if (string.IsNullOrWhiteSpace(text))
             return required ? (null, BadId()) : (null, null);
         var team = await ids.TryTeamAsync(text, ct);
-        if (team is not { } t || !caller.MayTeam(t.Value))
+        if (team is not { } t || !await caller.MayTeamAsync(db, t.Value, ct))
             return (null, NotFound());
         return (t.Value, null);
     }

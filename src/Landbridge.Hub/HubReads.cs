@@ -19,10 +19,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         var q = db.Sessions.AsNoTracking().AsQueryable();
         if (caller.Principal is Principal.Worker)
             q = q.Where(s => s.Id == caller.WorkerSession);
+        else if (teamId is { } team)
+            q = q.Where(s => s.TeamId == team);
         else if (caller.Teams is { } teams)
             q = q.Where(s => teams.Contains(s.TeamId));
-        if (teamId is { } team)
-            q = q.Where(s => s.TeamId == team);
         if (!includeHidden)
             q = q.Where(s => !s.Hidden);
         var rows = await q.OrderBy(s => s.Slug).Take(MaxLimit).ToListAsync(ct);
@@ -106,9 +106,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         HubCaller caller, Guid? teamId, Guid? sessionId, CancellationToken ct)
     {
         var q = db.RegisteredServices.AsNoTracking().AsQueryable();
+        var named = teamId is not null || sessionId is not null;
         if (caller.Principal is Principal.Worker)
             q = q.Where(s => s.SessionId == caller.WorkerSession);
-        else if (caller.Teams is { } teams)
+        else if (!named && caller.Teams is { } teams)
             q = q.Where(s => teams.Contains(s.TeamId));
         if (teamId is { } team)
             q = q.Where(s => s.TeamId == team);
@@ -127,10 +128,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         if (caller.Principal is Principal.Worker)
             q = q.Where(g => g.ProducerSessionId == caller.WorkerSession
                 || g.ConsumerSessionId == caller.WorkerSession);
+        else if (teamId is { } team)
+            q = q.Where(g => g.TeamId == team);
         else if (caller.Teams is { } teams)
             q = q.Where(g => teams.Contains(g.TeamId));
-        if (teamId is { } team)
-            q = q.Where(g => g.TeamId == team);
         var rows = await q.OrderByDescending(g => g.CreatedAt)
             .Take(MaxLimit)
             .ToListAsync(ct);
@@ -150,10 +151,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         var q = db.Set<PreviewMappingRow>().AsNoTracking().AsQueryable();
         if (caller.Principal is Principal.Worker)
             q = q.Where(p => p.SessionId == caller.WorkerSession);
+        else if (teamId is { } team)
+            q = q.Where(p => p.TeamId == team);
         else if (caller.Teams is { } teams)
             q = q.Where(p => teams.Contains(p.TeamId));
-        if (teamId is { } team)
-            q = q.Where(p => p.TeamId == team);
         var rows = await q.OrderByDescending(p => p.ExpiresAt)
             .Take(MaxLimit)
             .ToListAsync(ct);
@@ -241,10 +242,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         HubCaller caller, Guid? teamId, CancellationToken ct)
     {
         var q = db.FrictionReports.AsNoTracking().AsQueryable();
-        if (caller.Teams is { } teams)
-            q = q.Where(f => teams.Contains(f.TeamId));
         if (teamId is { } team)
             q = q.Where(f => f.TeamId == team);
+        else if (caller.Teams is { } teams)
+            q = q.Where(f => teams.Contains(f.TeamId));
         return await q.OrderByDescending(f => f.Seq)
             .Take(DefaultLimit)
             .Select(f => new FrictionDocument(f.Seq, f.At, f.Role, f.TeamId, f.SessionId, f.HumanId, f.Message))
@@ -255,10 +256,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         HubCaller caller, Guid? teamId, CancellationToken ct)
     {
         var q = db.Set<LeadEventRow>().AsNoTracking().AsQueryable();
-        if (caller.Teams is { } teams)
-            q = q.Where(e => teams.Contains(e.TeamId));
         if (teamId is { } team)
             q = q.Where(e => e.TeamId == team);
+        else if (caller.Teams is { } teams)
+            q = q.Where(e => teams.Contains(e.TeamId));
         var rows = await q.OrderByDescending(e => e.Seq)
             .Take(DefaultLimit)
             .ToListAsync(ct);
@@ -305,10 +306,10 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         var q = db.Commands.AsNoTracking().AsQueryable();
         if (caller.Principal is Principal.Worker)
             q = q.Where(c => c.SessionId == caller.WorkerSession);
+        else if (teamId is { } team)
+            q = q.Where(c => c.TeamId == team);
         else if (caller.Teams is { } teams)
             q = q.Where(c => teams.Contains(c.TeamId));
-        if (teamId is { } team)
-            q = q.Where(c => c.TeamId == team);
         if (string.IsNullOrWhiteSpace(status) || status == "pending")
             q = q.Where(c => c.Status == CommandRow.Queued || c.Status == CommandRow.Running);
         else

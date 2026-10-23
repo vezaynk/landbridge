@@ -132,7 +132,7 @@ The client opens a stream for every row it cares about and aborts it when that r
 - `event: ping` — ~15s, empty. Clients ignore unknown types.
 - Catch-up: `?after=<queueId>` / `Last-Event-ID`. Replay names ids to refetch, not bodies. After TTL gap: `GET` membership, then open row streams.
 - Subscribe (waiter) **before** the first `SELECT` so an insert during catch-up still wakes.
-- Auth is Bearer (`lbr_h_` / `lbr_l_` / `lbr_w_`). No cookies. Blazor and MCP copy the inbound token. Machine tokens are 403. Hub is loopback-only; the browser never dials it. SSE catch-up is the same scope as GET: a Lead does not see another Team's `entityId`.
+- Auth is Bearer (`lbr_h_` / `lbr_l_` / `lbr_w_`). No cookies. Blazor and MCP copy the inbound token. Machine tokens are 403. Hub is loopback-only; the browser never dials it. SSE catch-up is the same scope as GET: a Lead's unfiltered tail is the Teams that factory created; a named entity id is any Team that exists.
 - `X-Accel-Buffering: no`.
 
 NOTIFY payload stays an id. Hub wakes **every** subscriber (coalesce per stream); each stream’s catch-up filters by topic / entity.
@@ -171,7 +171,7 @@ JSON twins (same host, no body on the SSE). `{id}` is slug or Guid. No credentia
 | `/machines/{id}/processes`, `/processes`, `/processes/{id}` | `machine_processes` |
 | `/teams`, `/teams/{id}` | lead_teams + byte burn |
 | `/friction` | friction reports |
-| `/lead-events` | claim/release/takeover log |
+| `/lead-events` | claim/release log |
 
 Inbox **watch** moves to LeadMCP/WorkerMCP (Hub SSE + GET). Per-session fetch that clears unread stays a write. Commands (Part 2) and `/runner/events` (Part 3) are not these routes.
 

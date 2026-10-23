@@ -25,10 +25,10 @@ public enum CredentialKind
 
     /// <summary>
     /// A human session's Lead factory credential (§5). Authorizes
-    /// <c>create_team</c> and acting on Teams that credential owns. Team
-    /// membership is <see cref="LeadTeamRow"/>, not this row's
-    /// <see cref="CredentialRow.TeamId"/>. Lives until evicted or released.
-    /// Carries the claiming human's id so takeover can attribute an eviction.
+    /// <c>create_team</c> and addressing any existing Team by its id.
+    /// <see cref="LeadTeamRow"/> records which Teams this factory created,
+    /// for lists. Lives until released. <see cref="CredentialRow.HumanId"/>
+    /// is the claiming human, which a machine binding keys on.
     /// </summary>
     Lead,
 }
@@ -51,8 +51,8 @@ public sealed class CredentialRow
     public Guid? WorkerInstanceId { get; set; }
 
     /// <summary>
-    /// For a Lead credential: which human session holds the claim, so a takeover
-    /// can name whom it evicted (§4). For a Human credential the human's own id
+    /// For a Lead credential: the human session it descends from. A machine
+    /// binding keys on this (§8.3). For a Human credential the human's own id
     /// is simply this row's <see cref="Id"/>.
     /// </summary>
     public Guid? HumanId { get; set; }
@@ -84,20 +84,19 @@ public sealed class CredentialRow
     public DateTimeOffset? RevokedAt { get; set; }
 
     /// <summary>
-    /// Set when a Lead credential is revoked by takeover rather than voluntary
-    /// release (§4). The revocation is the same, but eviction carries who did it
-    /// and when — so the evicted session's next call fails with an explicit
-    /// reason, never a bare 403.
+    /// Set on a Lead credential an older build revoked while moving a Team.
+    /// Nothing new writes these. A row that still has them fails its next
+    /// call with who and when, rather than a bare 403.
     /// </summary>
     public Guid? EvictedByHuman { get; set; }
     public DateTimeOffset? EvictedAt { get; set; }
 }
 
 /// <summary>
-/// Ownership of a Team by a Lead factory credential. The Team id is the
-/// capability: a Lead tool accepts it only when this row says the presented
-/// credential owns it. One owner per Team. No MCP list — an agent either
-/// minted the id or a human supplied it.
+/// Which factory's list includes a Team. The id (guid or slug) is how any
+/// live Lead addresses the Team. One row per Team, so a second factory token
+/// is refused while the first is live. Lists use this row. There is no MCP
+/// list of Teams — an agent either minted the id or a human supplied it.
 /// </summary>
 public sealed class LeadTeamRow
 {
@@ -114,14 +113,14 @@ public sealed class LeadTeamRow
 }
 
 /// <summary>
-/// The Team-lead audit log (§4: every takeover is a logged event; §12: lead
-/// takeovers appear in the event log). Claims, releases, and takeovers each
-/// write a row, so contention over a Team is legible afterward.
+/// The Team-lead audit log (§4, §12). Claims and releases each write a row.
+/// <see cref="LeadEventKind.TakenOver"/> remains so older rows still read.
 /// </summary>
 public enum LeadEventKind
 {
     Claimed,
     Released,
+    /// <summary>Historical. New claims write <see cref="Claimed"/> or <see cref="Released"/>.</summary>
     TakenOver,
 }
 
@@ -134,7 +133,7 @@ public sealed class LeadEventRow
     /// <summary>The human whose session the claim now belongs to (null for a plain release).</summary>
     public Guid? HumanId { get; set; }
 
-    /// <summary>On a takeover, the evicted incumbent's human id.</summary>
+    /// <summary>On a historical <see cref="LeadEventKind.TakenOver"/> row, the previous human id.</summary>
     public Guid? PriorHumanId { get; set; }
 
     public DateTimeOffset OccurredAt { get; set; }
@@ -149,10 +148,8 @@ public sealed class LeadEventRow
 /// gap.
 ///
 /// <para>Keyed on the <b>human</b>, not the Lead credential or the Team: the
-/// machine on a person's desk does not change when their session ends, when they
-/// lead a second Team, or when someone takes their Team over. A takeover
-/// therefore does <em>not</em> inherit the evicted human's box — the new Lead has
-/// its own binding or none (§4).</para>
+/// machine on a person's desk does not change when their session ends or when
+/// they address another Team. Each human has their own binding or none (§4).</para>
 ///
 /// <para>One live binding per human and per machine, enforced by two partial
 /// unique indexes (<see cref="LandbridgeDbContext.OneLiveBindingPerHumanIndex"/>,
@@ -269,9 +266,10 @@ public abstract record Principal
 
     /// <summary>
     /// A live Lead factory credential (§5). <see cref="CredentialId"/> is the
-    /// row that owns Teams via <see cref="LeadTeamRow"/>. The engine actor is
-    /// still <see cref="Landbridge.Core.LeadClaim"/> — Team-only — constructed
-    /// per call after an ownership check, not stored on this principal.
+    /// row whose <see cref="LeadTeamRow"/> list names the Teams it created.
+    /// The engine actor is still <see cref="Landbridge.Core.LeadClaim"/> —
+    /// Team-only — constructed per call once the team id resolves, not stored
+    /// on this principal.
     ///
     /// <para><see cref="HumanId"/> is the claiming human's session id, carried from
     /// the credential row (§4: a Lead's authority descends from a human). The human
@@ -282,27 +280,27 @@ public abstract record Principal
     public sealed record Lead(Guid CredentialId, Guid? HumanId = null) : Principal;
 
     /// <summary>
-    /// A lead token that was evicted by takeover (§4). It authenticates only
-    /// far enough to tell its holder why: the tool surface refuses the call
-    /// with an explicit reason — evicted by whom, when — instead of a bare 403,
-    /// which would leave an agent inventing explanations for a denial.
+    /// A lead token an older build evicted while moving a Team (§4). It
+    /// authenticates only far enough to tell its holder why: the tool surface
+    /// refuses the call with an explicit reason — who, and when — instead of
+    /// a bare 403. Nothing new mints one.
     /// </summary>
     public sealed record EvictedLead(Landbridge.Core.TeamId Team, Guid EvictedByHuman, DateTimeOffset EvictedAt) : Principal;
 }
 
 /// <summary>
-/// Outcome of a lead claim (§4). One Lead per Team is a conditional claim: an
-/// actively-held Team refuses a second claimant unless they take over, and the
-/// refusal names the incumbent so a human can decide.
+/// Outcome of issuing a Lead factory token for a Team (§4). A Team that
+/// already has a live factory refuses a second token and names who holds the
+/// first. Address that Team by its id.
 /// </summary>
 public abstract record LeadClaimResult
 {
     private LeadClaimResult() { }
 
-    /// <summary>The claim (or takeover) succeeded; the lead token is minted once here.</summary>
+    /// <summary>The claim succeeded; the lead token is minted once here.</summary>
     public sealed record Claimed(IssuedToken Token, Landbridge.Core.TeamId Team) : LeadClaimResult;
 
-    /// <summary>The Team is actively led and takeover was not requested (§4).</summary>
+    /// <summary>The Team already has a live factory (§4).</summary>
     public sealed record Refused(Guid HeldByHuman, DateTimeOffset HeldSince) : LeadClaimResult;
 
     /// <summary>The presented token was not a live human session (§5: leads descend from humans).</summary>

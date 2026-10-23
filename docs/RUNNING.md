@@ -173,11 +173,13 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
 
 Lead identity is then *derived from the authenticated token*, not a tool call —
 a Lead factory principal is what the MCP Lead tools require. The dashboard issues
-that token (Connect or a setup link). `create_team` mints a Team that factory
-owns; every other Lead tool takes `teamId`. There is no `list_teams` and no
-`claim_lead`. Team / Machine Group enumeration is a human surface served by the
-web dashboard (each page has a `?format=json` twin a reattaching Lead can read
-for the Teams it owns). No MCP prompt is registered on this branch.
+that token (Connect or a setup link). `create_team` mints a Team and records it
+on that factory's list; every other Lead tool takes a `teamId` that names a Team.
+Any live Lead may pass an id that names a Team. There is no `list_teams` and no
+`claim_lead`. The Team list and the Machine Group are human surfaces served by the
+web dashboard (each page has a `?format=json` twin). A Lead's lists are the Teams
+that factory created; opening a Team by id is any Team that exists. No MCP prompt
+is registered on this branch.
 
 ## Enrolling a real second machine
 

@@ -114,13 +114,13 @@ public sealed class PreviewConnectService(
     {
         if (string.IsNullOrWhiteSpace(session))
             return false;
-        // Same validation the dashboard uses (§12): a live Human session sees any
-        // preview; a Lead is scoped to Teams that factory owns. An evicted, expired, or worker
-        // token authorizes nothing here.
+        // A live human session or a live Lead credential may confirm a preview.
+        // The Team id on the mapping is the address. An evicted, expired, or
+        // worker token authorizes nothing here.
         var principal = await tokens.ValidateAsync(session, ct);
         if (principal is Principal.Human) return true;
-        if (principal is Principal.Lead l)
-            return await tokens.OwnsTeamAsync(l.CredentialId, team, ct);
+        if (principal is Principal.Lead)
+            return await tokens.TeamExistsAsync(team, ct);
         return false;
     }
 }

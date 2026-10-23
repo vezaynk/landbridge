@@ -21,9 +21,9 @@ public sealed class SessionTaskHandlers(SessionStore store, TokenService tokens,
 
     public async ValueTask<JsonNode?> GetAsync(JsonRpcRequest request, CancellationToken ct)
     {
-        var lead = RequireLead();
+        RequireLead();
         var p = Params(request);
-        var team = await RequireTeam(lead, p, ct);
+        var team = await RequireTeam(p, ct);
         var id = ParseTaskId(p);
         var snap = await store.GetTaskSnapshotAsync(team, id, ct)
             ?? throw NotFound();
@@ -32,9 +32,9 @@ public sealed class SessionTaskHandlers(SessionStore store, TokenService tokens,
 
     public async ValueTask<JsonNode?> ListAsync(JsonRpcRequest request, CancellationToken ct)
     {
-        var lead = RequireLead();
+        RequireLead();
         var p = Params(request, allowMissing: true);
-        var team = await RequireTeam(lead, p, ct);
+        var team = await RequireTeam(p, ct);
         var cursor = p?["cursor"]?.GetValue<string>();
         try
         {
@@ -73,18 +73,15 @@ public sealed class SessionTaskHandlers(SessionStore store, TokenService tokens,
             ?? throw new McpProtocolException("tasks are a Lead surface", McpErrorCode.InvalidRequest);
     }
 
-    private async Task<TeamId> RequireTeam(Principal.Lead lead, JsonObject? p, CancellationToken ct)
+    private async Task<TeamId> RequireTeam(JsonObject? p, CancellationToken ct)
     {
         var raw = p?["teamId"]?.GetValue<string>();
-        var team = await ids.TryTeamAsync(raw, ct)
-            ?? throw new McpProtocolException(
-                "teamId is required: a team id from create_team, or one a human gave you",
-                McpErrorCode.InvalidParams);
-        if (!await tokens.OwnsTeamAsync(lead.CredentialId, team, ct))
+        var team = await ids.TryTeamAsync(raw, ct);
+        if (team is null || !await tokens.TeamExistsAsync(team.Value, ct))
             throw new McpProtocolException(
-                "this lead credential does not own that team",
-                McpErrorCode.InvalidRequest);
-        return team;
+                "teamId is required and must name a team on this plane",
+                McpErrorCode.InvalidParams);
+        return team.Value;
     }
 
     private static JsonObject? Params(JsonRpcRequest request, bool allowMissing = false)

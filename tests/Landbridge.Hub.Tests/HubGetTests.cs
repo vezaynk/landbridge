@@ -213,13 +213,16 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
             var human = await tokens.IssueHumanSessionAsync(ct);
             var team = TeamId.New();
             var claimed = Assert.IsType<LeadClaimResult.Claimed>(
-                await tokens.ClaimLeadAsync(human.Token, team, takeover: false, ct));
+                await tokens.ClaimLeadAsync(human.Token, team, ct));
             leadToken = claimed.Token.Token;
 
             var store = new SessionStore(db, clock);
             ownedSession = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
                 new CreateSession(new LeadClaim(team), team, "owned", "default"), ct)).Session.Id.Value;
+            var otherHuman = await tokens.IssueHumanSessionAsync(ct);
             var other = TeamId.New();
+            Assert.IsType<LeadClaimResult.Claimed>(
+                await tokens.ClaimLeadAsync(otherHuman.Token, other, ct));
             otherSession = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
                 new CreateSession(new LeadClaim(other), other, "secret", "default"), ct)).Session.Id.Value;
 
@@ -245,8 +248,9 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
         var listed = await lead.GetFromJsonAsync<JsonElement>("/sessions", Json, ct);
         Assert.Equal(1, listed.GetArrayLength());
         Assert.Equal(ownedSession, listed[0].GetProperty("id").GetGuid());
-        using var hidden = await lead.GetAsync($"/sessions/{otherSession}", ct);
-        Assert.Equal(HttpStatusCode.NotFound, hidden.StatusCode);
+        var opened = await lead.GetFromJsonAsync<JsonElement>($"/sessions/{otherSession}", Json, ct);
+        Assert.Equal(otherSession, opened.GetProperty("id").GetGuid());
+        Assert.Equal("secret", opened.GetProperty("description").GetString());
 
         using var worker = HubTestHost.Client(app, workerToken);
         using var machines = await worker.GetAsync("/machines", ct);

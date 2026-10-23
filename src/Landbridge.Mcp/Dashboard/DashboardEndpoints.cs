@@ -23,8 +23,9 @@ namespace Landbridge.Mcp.Dashboard;
 /// and JSON is <see cref="DashboardJsonReads"/>.
 ///
 /// <para>Two rules run across the whole surface rather than route by route. Reads are scoped to
-/// what the resolved principal may see — a human operator reads the instance, a Lead reads the
-/// Teams that factory owns (<see cref="Gated"/>). Mutating POSTs must come from this dashboard's own origin
+/// what the resolved principal may see — a human operator reads the instance, a Lead's lists
+/// are the Teams that factory created, and a named Team is any Team that exists (<see cref="Gated"/>).
+/// Mutating POSTs must come from this dashboard's own origin
 /// (<see cref="CrossOriginRefusal"/>), because the session cookie is the only thing they need
 /// and a browser will attach it to anyone's form.</para>
 /// </summary>
@@ -205,14 +206,14 @@ public static class DashboardEndpoints
         Principal principal, Landbridge.Core.TeamId team, TokenService tokens, CancellationToken ct)
     {
         if (principal is Principal.Human) return true;
-        if (principal is Principal.Lead l)
-            return await tokens.OwnsTeamAsync(l.CredentialId, team, ct);
+        if (principal is Principal.Lead)
+            return await tokens.TeamExistsAsync(team, ct);
         return false;
     }
 
     /// <summary>
     /// POST /dashboard/preview — mint a shareable preview for a registered service
-    /// (§12 button, §8.4). Operator-gated; a Lead may mint only for a Team it owns. The
+    /// (§12 button, §8.4). Operator-gated; a Lead may mint for a Team that exists. The
     /// service field is <c>{sessionId}:{name}</c> from the Team view so the mapping binds
     /// the exact owning task. Returns the URL (HTML result page, or JSON twin).
     /// </summary>
@@ -747,13 +748,13 @@ public static class DashboardEndpoints
     /// caller gets 401 and a browser is redirected to the login page.
     ///
     /// <para><b>The resolved principal is handed to the body, and every body has to use it.</b>
-    /// These views are not uniform: a human operator reads the instance (§12), while a Lead
-    /// holds a credential scoped to one Team (§5) and reads only that Team (§4 reattachment,
-    /// §10 as-built — no cross-Team or machine-group views for agents). Authenticating and then
-    /// discarding the principal is what turned a Lead token into an instance-wide reader, so the
-    /// signature no longer allows it: owned-Team scope for a scoped read,
+    /// These views are not uniform: a human operator reads the instance (§12). A Lead's
+    /// lists are the Teams that factory created. A named Team is any Team that exists.
+    /// The machine group stays human-only. Authenticating and then discarding the
+    /// principal is what turned a Lead token into an instance-wide reader, so the
+    /// signature no longer allows it: the created-Team list for a list,
     /// <see cref="OperatorMayAccess"/> for a named Team, <see cref="Refused"/> for the views
-    /// with no Lead-scoped answer.</para>
+    /// with no Lead answer.</para>
     /// </summary>
     private static async Task<IResult> Gated(
         HttpContext http, TokenService tokens, CancellationToken ct, Func<Principal, Task<IResult>> body)
@@ -769,11 +770,11 @@ public static class DashboardEndpoints
     /// The Teams a caller's multi-Team reads are confined to, or null for the instance-wide
     /// view a human operator gets. The inverse of <see cref="OperatorMayAccess"/>, for the routes
     /// that name no Team: rather than refusing a Lead outright they answer with the Teams that
-    /// factory owns, which is the §4 reattachment surface it is entitled to.
+    /// factory created. A route that names a Team uses the id.
     /// </summary>
     private const string MachinesAreHumanOnly =
-        "the machine group is a human-operator view; a Lead session sees its owned Teams "
-        + "on /dashboard/teams and through get_team_state";
+        "the machine group is a human-operator view; a Lead addresses a Team by its id "
+        + "on /dashboard/teams/{id} and through get_team_state";
 
     private const string RevokingIsHumanOnly =
         "revoking a machine is a human-operator action; a machine belongs to no Team, so a Lead "
@@ -784,7 +785,7 @@ public static class DashboardEndpoints
         + "bind_machine and open_lead_forward";
 
     private const string NotYourTeam =
-        "this session may only read a Team it owns";
+        "no team with that id";
 
     /// <summary>
     /// A 403 for a caller whose credential does not reach what it asked for: the JSON twin gets
