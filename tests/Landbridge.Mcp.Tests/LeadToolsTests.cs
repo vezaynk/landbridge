@@ -68,7 +68,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Create_team_mints_an_id_this_factory_owns_and_a_sibling_does_not()
+    public async Task Create_team_mints_an_id_another_live_lead_can_address()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(Factory);
@@ -83,9 +83,13 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var otherTeam = TeamId.New();
         var other = await LeadFactory.SeedAsync(pg, otherTeam, _clock);
-        var ex = await Assert.ThrowsAsync<McpException>(
-            () => LeadFor(other).CreateSession("nope", "default", minted, CancellationToken.None));
-        Assert.Contains("does not own that team", ex.Message, StringComparison.Ordinal);
+        var otherText = await LeadFor(other).CreateSession("from the other factory", "default", minted, CancellationToken.None);
+        await using var v2 = pg.NewContext();
+        var otherRow = await v2.Sessions.AsNoTracking().SingleAsync(t => t.Slug == otherText);
+        Assert.Equal(teamRow.TeamId, otherRow.TeamId);
+        var still = await v2.LeadTeams.AsNoTracking().SingleAsync(t => t.Slug == minted);
+        Assert.Equal(teamRow.LeadCredentialId, still.LeadCredentialId);
+        Assert.NotEqual(other.CredentialId, still.LeadCredentialId);
     }
 
     [SkippableFact]

@@ -242,7 +242,7 @@ internal static class ConnectEndpoints
             if (string.IsNullOrWhiteSpace(humanToken))
                 return Results.Redirect("/dashboard/login");
 
-            var (teamIdText, takeover) = await ReadClaimAsync(http, ct);
+            var teamIdText = await ReadClaimAsync(http, ct);
             TeamId team;
             if (string.IsNullOrWhiteSpace(teamIdText))
                 team = TeamId.New();
@@ -256,7 +256,7 @@ internal static class ConnectEndpoints
                 team = resolved.Value;
             }
 
-            var result = await tokens.ClaimLeadAsync(humanToken, team, takeover, ct);
+            var result = await tokens.ClaimLeadAsync(humanToken, team, ct);
             var mcpUrl = ResolveMcpUrl(config, http);
             if (result is LeadClaimResult.Claimed claimed)
                 return await WriteClaimedAsync(http, tokens, claimed, mcpUrl, ct);
@@ -264,8 +264,7 @@ internal static class ConnectEndpoints
             {
                 LeadClaimResult.Refused refused =>
                     RefusedClaim(http,
-                        $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; check takeover to move this Team to a new token",
-                        takeoverHint: true),
+                        $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; address that Team by its id"),
                 LeadClaimResult.NoHumanSession =>
                     RefusedClaim(http,
                         "issuing a Lead token requires a human session (the operator passphrase door), not a pasted Lead token"),
@@ -292,7 +291,7 @@ internal static class ConnectEndpoints
             if (string.IsNullOrWhiteSpace(humanToken))
                 return Results.Redirect("/dashboard/login");
 
-            var (teamIdText, takeover) = await ReadClaimAsync(http, ct);
+            var teamIdText = await ReadClaimAsync(http, ct);
             TeamId team;
             if (string.IsNullOrWhiteSpace(teamIdText))
                 team = TeamId.New();
@@ -306,15 +305,14 @@ internal static class ConnectEndpoints
                 team = resolved.Value;
             }
 
-            var result = await tokens.ClaimLeadAsync(humanToken, team, takeover, ct);
+            var result = await tokens.ClaimLeadAsync(humanToken, team, ct);
             if (result is not LeadClaimResult.Claimed claimed)
             {
                 return result switch
                 {
                     LeadClaimResult.Refused refused =>
                         RefusedClaim(http,
-                            $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; check takeover to move this Team to a new token",
-                            takeoverHint: true),
+                            $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; address that Team by its id"),
                     LeadClaimResult.NoHumanSession =>
                         RefusedClaim(http,
                             "issuing a Lead token requires a human session (the operator passphrase door), not a pasted Lead token"),
@@ -438,17 +436,16 @@ internal static class ConnectEndpoints
             });
     }
 
-    private static async Task<(string TeamId, bool Takeover)> ReadClaimAsync(HttpContext http, CancellationToken ct)
+    private static async Task<string> ReadClaimAsync(HttpContext http, CancellationToken ct)
     {
         if (http.Request.HasJsonContentType())
         {
             var body = await http.Request.ReadFromJsonAsync<ClaimLeadBody>(Json, ct);
-            return (body?.TeamId ?? "", body?.Takeover == true);
+            return body?.TeamId ?? "";
         }
 
         var form = await http.Request.ReadFormAsync(ct);
-        return (form["teamId"].ToString(),
-            string.Equals(form["takeover"].ToString(), "true", StringComparison.OrdinalIgnoreCase));
+        return form["teamId"].ToString();
     }
 
     private static IResult InvalidTeam(HttpContext http)
@@ -459,11 +456,11 @@ internal static class ConnectEndpoints
             : RazorPage<LeadClaimRefusedPage>(new { Reason = reason }, StatusCodes.Status400BadRequest);
     }
 
-    private static IResult RefusedClaim(HttpContext http, string reason, bool takeoverHint = false) =>
+    private static IResult RefusedClaim(HttpContext http, string reason) =>
         DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
             ? Results.Json(new { error = reason }, Json, statusCode: StatusCodes.Status409Conflict)
             : RazorPage<LeadClaimRefusedPage>(
-                new { Reason = reason, ShowTakeoverHint = takeoverHint },
+                new { Reason = reason },
                 StatusCodes.Status409Conflict);
 
     private static async Task<IResult> GatedHuman(
@@ -507,4 +504,4 @@ internal static class ConnectEndpoints
         "this form is same-origin only: the request carried no Origin from the dashboard's own host";
 }
 
-internal sealed record ClaimLeadBody(string? TeamId, bool? Takeover);
+internal sealed record ClaimLeadBody(string? TeamId);

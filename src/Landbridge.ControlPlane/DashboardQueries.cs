@@ -18,7 +18,8 @@ namespace Landbridge.ControlPlane;
 ///
 /// <para><b>Every read here is instance-wide unless the caller scopes it.</b> The §12 views are
 /// a human-operator surface and a human sees the whole instance; the same routes also serve a
-/// reattaching Lead the Teams that factory owns as structured data (§4). There is no MCP
+/// reattaching Lead the Teams that factory created as structured data (§4). Opening a
+/// Team by id is any Team that exists. There is no MCP
 /// <c>list_teams</c>; the dashboard list is the recovery surface. So the tenant filter
 /// is a <c>teamScope</c> parameter on the multi-Team reads rather than an assumption — the
 /// endpoint resolves the principal and says what it may see, and <c>null</c> is the deliberate
@@ -166,7 +167,7 @@ public sealed partial class DashboardQueries(
     /// </summary>
     /// <param name="teamScope">The Teams this read may see, or null for the instance-wide
     /// human view (§12 — see <see cref="GetInboxAsync"/> for why the parameter exists). A
-    /// scoped call returns the overviews for the Teams that factory owns.</param>
+    /// scoped call returns the overviews for the Teams that factory created.</param>
     public async Task<IReadOnlyList<TeamOverview>> GetTeamsAsync(
         IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
     {
@@ -494,7 +495,7 @@ public sealed partial class DashboardQueries(
     /// The Teams this read may see, or null for the instance-wide human view.
     ///
     /// <para>The §12 inbox is "everything waiting on a person <em>across every Team</em>", and
-    /// for a human it still is. The same routes serve a Lead the Teams that factory owns as
+    /// for a human it still is. The same routes serve a Lead the Teams that factory created as
     /// structured data (§4 reattachment, §12) — so the caller passes those ids and the filter
     /// happens in SQL, not in a renderer that could forget.</para>
     /// </param>
@@ -616,14 +617,14 @@ public sealed partial class DashboardQueries(
 
     /// <summary>
     /// Recent task transitions and Lead events interleaved, newest first, bounded.
-    /// Lead takeovers surface as <c>lead</c> events (§4); machine reboots and
+    /// Lead claims and releases surface as <c>lead</c> events (§4); machine reboots and
     /// evictions surface as the <c>LivenessLost</c> task transitions they drive
     /// (§10/§12). Each event carries only structure — kind, from/to state,
     /// identifiers, the store's own effect-name detail — never prose.
     /// </summary>
-    /// <param name="teamScope">See <see cref="GetInboxAsync"/> — a Lead's owned Teams, or null for
+    /// <param name="teamScope">See <see cref="GetInboxAsync"/> — a Lead's created Teams, or null for
     /// the instance-wide human view. Scoped on both sources, so a Lead's log carries neither
-    /// another Team's transitions nor another Team's takeovers.</param>
+    /// another Team's transitions nor another Team's claims.</param>
     /// <param name="sessionId">When set, only that session's task events. Lead events have no
     /// session and are omitted.</param>
     public async Task<IReadOnlyList<DashboardEvent>> GetEventsAsync(

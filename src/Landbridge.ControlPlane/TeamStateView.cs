@@ -22,8 +22,8 @@ public sealed record TeamStateView(
 /// The calling Lead's own bound machine (§8.3 human path), carried on the
 /// reattachment surface because that is where a fresh Lead learns it: null means no
 /// machine is bound and <c>open_lead_forward</c> will refuse until one is. A
-/// machine-scoped fact about the <em>human</em>, not about the Team — a takeover does
-/// not inherit it — so it is composed onto the view by the tool that knows the
+/// machine-scoped fact about the <em>human</em>, not about the Team — the same box
+/// across Teams — so it is composed onto the view by the tool that knows the
 /// caller, not read out of the Team's rows. Identifiers only, no prose (§10).
 /// </summary>
 public sealed record LeadMachineView(string MachineId, string MachineName, DateTimeOffset BoundAt);
@@ -38,7 +38,7 @@ public sealed record LeadMachineView(string MachineId, string MachineName, DateT
 /// <para><b>Deliberately not the Machine Group view</b> (§12, which stays human-only).
 /// This is the routing projection and nothing else: profile names, the machines offering
 /// each, and whether each of those machines can take work right now. No tasks, no owning
-/// Teams, no services, no processes, no takeover history — a Lead needs to know where a
+/// Teams, no services, no processes — a Lead needs to know where a
 /// profile can run, not what the fleet is doing.</para>
 ///
 /// <para><b>Fleet-wide, and that is the correct scope for this one read.</b> Every other

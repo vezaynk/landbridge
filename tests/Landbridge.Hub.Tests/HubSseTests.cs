@@ -229,12 +229,15 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
             var human = await tokens.IssueHumanSessionAsync(ct);
             var team = TeamId.New();
             var claimed = Assert.IsType<LeadClaimResult.Claimed>(
-                await tokens.ClaimLeadAsync(human.Token, team, takeover: false, ct));
+                await tokens.ClaimLeadAsync(human.Token, team, ct));
             leadToken = claimed.Token.Token;
             var store = new SessionStore(db, clock);
             owned = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
                 new CreateSession(new LeadClaim(team), team, "owned", "default"), ct)).Session.Id.Value;
+            var otherHuman = await tokens.IssueHumanSessionAsync(ct);
             var stranger = TeamId.New();
+            Assert.IsType<LeadClaimResult.Claimed>(
+                await tokens.ClaimLeadAsync(otherHuman.Token, stranger, ct));
             other = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
                 new CreateSession(new LeadClaim(stranger), stranger, "secret", "default"), ct)).Session.Id.Value;
         }
@@ -259,8 +262,12 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
                 () => ReadSseEventAsync(reader, extra.Token));
         }
 
-        using var hidden = await client.GetAsync($"/sessions/{other}/events", ct);
-        Assert.Equal(HttpStatusCode.NotFound, hidden.StatusCode);
+        using (var named = new HttpRequestMessage(HttpMethod.Get, $"/sessions/{other}/events"))
+        {
+            named.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+            using var row = await client.SendAsync(named, HttpCompletionOption.ResponseHeadersRead, ct);
+            Assert.Equal(HttpStatusCode.OK, row.StatusCode);
+        }
 
         await app.StopAsync(ct);
     }

@@ -63,66 +63,34 @@ public sealed class TokenService(
     }
 
     /// <summary>
-    /// Claims the Lead factory for a human session and assigns
-    /// <paramref name="team"/> to that factory (§4, §5). One live owner per
-    /// Team is <see cref="LeadTeamRow"/>'s primary key: a vacant Team is
-    /// claimed silently; an actively-owned Team refuses a second claimant
-    /// unless <paramref name="takeover"/> is set. Takeover reassigns that
-    /// Team. The incumbent factory token is revoked only when it owns no
-    /// other Team — a factory that still owns siblings stays live.
+    /// Claims a Lead factory for a human session and records
+    /// <paramref name="team"/> on that factory's list (§4, §5). One
+    /// <see cref="LeadTeamRow"/> per Team: a vacant or leadless Team is
+    /// claimed; a Team that already has a live factory refuses a second
+    /// token. Addressing the Team is separate — any live Lead credential
+    /// passes its id.
     /// </summary>
     public async Task<LeadClaimResult> ClaimLeadAsync(
-        string humanToken, TeamId team, bool takeover = false, CancellationToken ct = default)
+        string humanToken, TeamId team, CancellationToken ct = default)
     {
         if (await ValidateAsync(humanToken, ct) is not Principal.Human human)
             return new LeadClaimResult.NoHumanSession();
 
         var ownership = await db.LeadTeams
             .FirstOrDefaultAsync(t => t.TeamId == team.Value, ct);
-        CredentialRow? incumbent = null;
         if (ownership is not null)
         {
-            incumbent = await db.Set<CredentialRow>()
+            var incumbent = await db.Set<CredentialRow>()
                 .FirstOrDefaultAsync(c => c.Id == ownership.LeadCredentialId, ct);
             if (incumbent is { Revoked: false })
-            {
-                if (!takeover)
-                    return new LeadClaimResult.Refused(incumbent.HumanId ?? Guid.Empty, incumbent.CreatedAt);
-            }
-            else
-            {
-                incumbent = null;
-            }
+                return new LeadClaimResult.Refused(incumbent.HumanId ?? Guid.Empty, incumbent.CreatedAt);
         }
 
         var now = clock.GetUtcNow();
         var (token, row) = NewCredential(CredentialKind.Lead, ttl: null, humanId: human.HumanId);
         db.Set<CredentialRow>().Add(row);
 
-        if (incumbent is not null)
-        {
-            var siblings = await db.LeadTeams.CountAsync(
-                t => t.LeadCredentialId == incumbent.Id && t.TeamId != team.Value, ct);
-            if (siblings == 0)
-            {
-                incumbent.Revoked = true;
-                incumbent.RevokedAt = now;
-                incumbent.EvictedByHuman = human.HumanId;
-                incumbent.EvictedAt = now;
-                incumbent.TeamId = team.Value;
-            }
-
-            ownership!.LeadCredentialId = row.Id;
-            db.Set<LeadEventRow>().Add(new LeadEventRow
-            {
-                TeamId = team.Value,
-                Kind = LeadEventKind.TakenOver,
-                HumanId = human.HumanId,
-                PriorHumanId = incumbent.HumanId,
-                OccurredAt = now,
-            });
-        }
-        else if (ownership is not null)
+        if (ownership is not null)
         {
             ownership.LeadCredentialId = row.Id;
             db.Set<LeadEventRow>().Add(new LeadEventRow
@@ -162,7 +130,7 @@ public sealed class TokenService(
             {
                 // Slug race on a vacant-Team insert. Re-run the claim: the Team row
                 // did not land, so this is not a second claimant.
-                return await ClaimLeadAsync(humanToken, team, takeover, ct);
+                return await ClaimLeadAsync(humanToken, team, ct);
             }
             var winnerOwn = await db.LeadTeams.AsNoTracking()
                 .FirstOrDefaultAsync(t => t.TeamId == team.Value, ct);
@@ -176,8 +144,8 @@ public sealed class TokenService(
     }
 
     /// <summary>
-    /// Mints a new Team owned by this Lead factory credential. The id is the
-    /// capability; there is no list. An agent that was not given a Team id
+    /// Mints a new Team and records it on this Lead factory's list. The id is
+    /// the address; there is no list. An agent that was not given a Team id
     /// calls this and keeps the result in conversation, not in the project.
     /// </summary>
     public async Task<TeamId> CreateTeamAsync(Guid leadCredentialId, CancellationToken ct = default)
@@ -228,9 +196,17 @@ public sealed class TokenService(
             (slug, token) => db.LeadTeams.AsNoTracking().AnyAsync(t => t.Slug == slug, token),
             ct);
 
+    /// <summary>
+    /// True when this factory's list includes <paramref name="team"/>.
+    /// Addressing a Team uses <see cref="TeamExistsAsync"/>.
+    /// </summary>
     public Task<bool> OwnsTeamAsync(Guid leadCredentialId, TeamId team, CancellationToken ct = default) =>
         db.LeadTeams.AsNoTracking()
             .AnyAsync(t => t.TeamId == team.Value && t.LeadCredentialId == leadCredentialId, ct);
+
+    /// <summary>True when <paramref name="team"/> is a Team on this plane.</summary>
+    public Task<bool> TeamExistsAsync(TeamId team, CancellationToken ct = default) =>
+        db.LeadTeams.AsNoTracking().AnyAsync(t => t.TeamId == team.Value, ct);
 
     public async Task<IReadOnlyList<Guid>> OwnedTeamIdsAsync(Guid leadCredentialId, CancellationToken ct = default) =>
         await db.LeadTeams.AsNoTracking()
@@ -246,9 +222,8 @@ public sealed class TokenService(
     /// <summary>
     /// Voluntary release of a lead claim (§4): the Team becomes leadless and
     /// claimable, and the release is logged. A released token stops
-    /// authenticating cleanly — release, unlike eviction, carries no surprise,
-    /// so no explicit reason is owed. Returns false if the token was not a live
-    /// lead claim.
+    /// authenticating. A credential revoked by an older eviction still names
+    /// who and when. Returns false if the token was not a live lead claim.
     /// </summary>
     public async Task<bool> ReleaseLeadAsync(string leadToken, CancellationToken ct = default)
     {

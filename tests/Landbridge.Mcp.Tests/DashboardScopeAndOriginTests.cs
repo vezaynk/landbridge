@@ -22,11 +22,12 @@ namespace Landbridge.Mcp.Tests;
 /// HTTP against the ephemeral Postgres fixture.
 ///
 /// <para><b>Who may read what.</b> Every view here accepts a Lead token, because §12 requires a
-/// structured twin a reattaching Lead can consume (§4). What it may consume is the Teams that
-/// factory owns: a Lead credential is not itself a Team (§5) and an agent gets no MCP list of
+/// structured twin a reattaching Lead can consume (§4). A named Team id is any Team that exists.
+/// Lists (the Team list, the inbox, the event log, friction) stay on the Teams that factory
+/// created: a Lead credential is not itself a Team (§5) and an agent gets no MCP list of
 /// Teams or machine-group view
 /// (§10 as-built, §12 "human operator session only"). The suite therefore seeds <b>two</b> Teams
-/// for every read and asserts the other one is absent — a scoping bug is invisible against a
+/// for every list and asserts the other one is absent — a scoping bug is invisible against a
 /// single-Team fixture, which is how the instance-wide behaviour survived as long as it did.</para>
 ///
 /// <para><b>Where a write may come from.</b> The session lives in a cookie and the forms carry no
@@ -48,15 +49,15 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    // ── Reads: a Lead sees Teams it owns, a human sees the instance ─────────────
+    // ── Reads: a named Team is any Team that exists; lists stay created ────────
 
     /// <summary>
-    /// The worst of the reads, because the route takes an arbitrary Team id and the page it
-    /// serves carries the Team's prose — the worker's report, the question it asked, the answer
-    /// it got, the artifact pointer it handed over. A Lead reaches its own and nothing else.
+    /// The route takes an arbitrary Team id and the page it serves carries the Team's
+    /// prose — the worker's report, the question it asked, the answer it got, the artifact
+    /// pointer it handed over. A live Lead addresses that page by the id.
     /// </summary>
     [SkippableFact]
-    public async Task A_lead_reads_its_own_team_page_and_is_refused_another_teams()
+    public async Task A_lead_reads_any_existing_team_page_by_id()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -73,21 +74,20 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
 
         using var client = Client(app);
 
-        // A Team it owns: the full page, prose and all.
+        // A Team this factory created: the full page, prose and all.
         var own = await GetAsync(client, $"/dashboard/teams/{mine.Value}", lead, ct);
         Assert.Equal(HttpStatusCode.OK, own.StatusCode);
         Assert.Contains("my own worker said this", await own.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
 
-        // Another Team, by id: refused before the read happens, on both representations, and
-        // the refusal carries none of what it was protecting.
+        // Another existing Team, by id: the same page. The id is the address.
         var otherHtml = await GetAsync(client, $"/dashboard/teams/{theirs.Value}", lead, ct);
         var otherJson = await GetAsync(client, $"/dashboard/teams/{theirs.Value}?format=json", lead, ct);
-        Assert.Equal(HttpStatusCode.Forbidden, otherHtml.StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, otherJson.StatusCode);
-        var refusedBody = await otherHtml.Content.ReadAsStringAsync(ct);
-        Assert.DoesNotContain(TheirSecret, refusedBody, StringComparison.Ordinal);
-        Assert.DoesNotContain(theirNamespace, refusedBody, StringComparison.Ordinal);
-        Assert.DoesNotContain(TheirSecret, await otherJson.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.OK, otherHtml.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, otherJson.StatusCode);
+        var otherBody = await otherHtml.Content.ReadAsStringAsync(ct);
+        Assert.Contains(TheirSecret, otherBody, StringComparison.Ordinal);
+        Assert.Contains(theirNamespace, otherBody, StringComparison.Ordinal);
+        Assert.Contains(TheirSecret, await otherJson.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
 
         // A human operator reads either — the refusal is about the credential's scope, not
         // about the page being unavailable.
@@ -107,7 +107,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
     /// <summary>
     /// The routes that name no Team answer a Lead with its own rather than refusing: the Team
     /// list, the inbox, and the event log are all reattachment surfaces (§4). Each is asserted
-    /// on both halves — a Team it owns present, the other Team absent — because a filter applied
+    /// on both halves — a Team it created present, the other Team absent — because a filter applied
     /// to one query and forgotten on the next is the shape this bug had.
     /// </summary>
     [SkippableFact]
@@ -124,7 +124,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         var theirs = TeamId.New();
         var (myBlocked, myNamespace) = await SeedBlockedTaskAsync(mine, "what should I do here?", ct);
         var (_, theirNamespace) = await SeedBlockedTaskAsync(theirs, TheirSecret, ct);
-        // A Lead claim on the other Team, so its takeover event is in the log too.
+        // A Lead claim on the other Team, so its claim event is in the log too.
         await ClaimLeadAsync(theirs, ct);
         var lead = await IssueLeadTokenAsync(mine, ct);
 
@@ -144,7 +144,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         Assert.DoesNotContain(TheirSecret, inbox.RootElement.GetRawText(), StringComparison.Ordinal);
         Assert.DoesNotContain(theirNamespace, inbox.RootElement.GetRawText(), StringComparison.Ordinal);
 
-        // ── The event log: its own transitions and its owned Teams' lead events only.
+        // ── The event log: its own transitions and its created Teams' lead events only.
         using var events = await GetJsonAsync(client, "/dashboard/events?format=json", lead, ct);
         var rows = events.RootElement.EnumerateArray().ToList();
         Assert.NotEmpty(rows);

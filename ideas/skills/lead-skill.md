@@ -20,13 +20,13 @@ Your MCP token is a factory, not a Team. Every Lead tool except `create_team` an
 
 A Lead token is minted on dashboard Connect (or a one-time setup link). Once you hold a token, pick a Team — a human-supplied id, or `create_team` — and pass it as `teamId` on every other Lead tool. There is no claim tool and no `/landbridge-lead` command.
 
-**If you are attaching to a Team that already has work in flight** — reattachment after a closed laptop, or a takeover — your context window is empty and the Team's state is not. Read it before doing anything:
+**If you are attaching to a Team that already has work in flight** — reattachment after a closed laptop — your context window is empty and the Team's state is not. Read it before doing anything:
 
 1. `watch_lead_inbox` / `get_lead_inbox` with `teamId` for outstanding items; `get_team_state` with that same `teamId` for occupancy, health, and message state.
 2. Read the most recent results and blocker notes.
 3. Only then decide what to do next.
 
-You can read a session's captured transcript with `read_transcript`. It is verbatim and may contain secrets — do not print them. You still cannot see another Team's sessions. You can also ask a worker for a report of what it has been working on.
+You can read a session's captured transcript with `read_transcript`. It is verbatim and may contain secrets — do not print them. Pass that session's team id: the id is how you address the Team. You can also ask a worker for a report of what it has been working on.
 
 ## Decomposing work
 
@@ -62,7 +62,7 @@ A worker can start background processes that **outlive its session** — builds,
 
 That is deliberate, and it makes cleanup your job. **Before you close out work on a machine, send a message to tidy up.** Be explicit and intentional on what you would like to be cleared, with what expected blast radius.
 
-If you are unsure what is still running, ask your operator to check the Machine Group view (`/dashboard/machines`) — it lists every process a machine holds and which session started it, and a machine accumulating processes across closed-out work is the visible symptom of a cleanup continuation nobody sent. That view is human-only: your Lead token reads the Teams it owns, not the fleet. The one fleet-wide read you do have is `list_profiles`, and it carries routing only — which profiles exist and where they can run — never what those machines are running.
+If you are unsure what is still running, ask your operator to check the Machine Group view (`/dashboard/machines`) — it lists every process a machine holds and which session started it, and a machine accumulating processes across closed-out work is the visible symptom of a cleanup continuation nobody sent. That view is human-only. The one fleet-wide read you do have is `list_profiles`, and it carries routing only — which profiles exist and where they can run — never what those machines are running.
 
 ## Choosing a profile
 
@@ -94,7 +94,7 @@ When a snapshot names a session, pass that `sessionId` and `teamId` to `get_lead
 
 **Answer input requests promptly, and answer them in words.** A permission wait occupies a live ACP session (`awaiting_permission`); do not `park_session` it. A plan wait (`awaiting_plan`) is the same: the worker is blocked inside `submit_plan`, and `park_session` is refused. A prose question may have ended the turn (`awaiting_lead`); the process stays for a follow-up `prompt` so the worker can pull `get_inbox`. Wait TTL is off by default — a forgotten question holds the lease until you answer or you `park_session`.
 
-The loop is: `get_lead_inbox(teamId, sessionId)` to read the ask, then `send_input_response(teamId, session, answer)` with your decision. **Pass the `answer`.** Without it the session is merely unblocked, and the worker resumes knowing it was answered but not with what — so it guesses or asks the same question again. Answer the question that was asked, and include enough of _why_ that the worker can apply your reasoning to the adjacent cases you didn't enumerate; it is capped at 16 KB, so point at a reference rather than pasting. If occupancy is already `on_disk`, answering wakes it (`session/load`). A question item stays until you answer it, so a reattached or takeover Lead can still see the ask. Follow-ups, park wakes, stopped-session unhides, and failed retries are `send_input_request`, not this.
+The loop is: `get_lead_inbox(teamId, sessionId)` to read the ask, then `send_input_response(teamId, session, answer)` with your decision. **Pass the `answer`.** Without it the session is merely unblocked, and the worker resumes knowing it was answered but not with what — so it guesses or asks the same question again. Answer the question that was asked, and include enough of _why_ that the worker can apply your reasoning to the adjacent cases you didn't enumerate; it is capped at 16 KB, so point at a reference rather than pasting. If occupancy is already `on_disk`, answering wakes it (`session/load`). A question item stays until you answer it, so a reattached Lead can still see the ask. Follow-ups, park wakes, stopped-session unhides, and failed retries are `send_input_request`, not this.
 
 Request kinds you will see:
 
@@ -153,7 +153,7 @@ A worker can register a live service — a database, an API, a dev server — an
 **For anything else — Postgres, Redis, an SSH port, any raw TCP protocol — your human needs a local port**, and that means their machine must be part of the fleet and claimed as theirs. One-time setup:
 
 1. **Install and enroll `landbridged` on the machine your human is actually sitting at.** Enrollment is the same on their laptop as on any machine — an agent on that box follows the `landbridge-enroll` skill. There is no `/landbridge-enroll` command to invoke; point them at the skill, not at a slash command. Enrolling their laptop does not volunteer it for work — nothing dispatches there unless it declares itself ready.
-2. **`bind_machine`** with this machine's id and a `teamId` this factory owns. If you are on the same box as `landbridged`, GET `http://127.0.0.1:19378` — the body is the UUID. That is the explicit statement "this is my human's own box"; without it the control plane has no idea where the person is, and refuses to open a port anywhere. One machine per person: if they move to a different one, `unbind_machine` first. Enrollment stdout and the dashboard Machine Group view also have the id if the loopback GET fails.
+2. **`bind_machine`** with this machine's id and the Team's `teamId`. If you are on the same box as `landbridged`, GET `http://127.0.0.1:19378` — the body is the UUID. That is the explicit statement "this is my human's own box"; without it the control plane has no idea where the person is, and refuses to open a port anywhere. One machine per person: if they move to a different one, `unbind_machine` first. Enrollment stdout and the dashboard Machine Group view also have the id if the loopback GET fails.
 
 Then, once per connection they want: **`open_lead_forward(teamId, serviceName)`** returns a host and port on their machine. Hand it over as a command to run — `psql -h 127.0.0.1 -p <port> ...` — not as a fact to note.
 
@@ -162,7 +162,7 @@ Two limits to say out loud rather than let them discover:
 - **The address carries exactly one connection.** One `psql`, one client. A second connection needs a second `open_lead_forward`.
 - **It must be used promptly** — the listener closes after a couple of minutes if nobody connects. So open it _when they are at the keyboard ready to paste_, not while you are still explaining. Once connected, the splice is stable and lives until the owning session stops working.
 
-`get_team_state` shows which machine you have bound, which is worth checking after a reattachment: your context is empty but the binding survived, because it belongs to your human rather than to your session. A takeover does **not** inherit the previous Lead's machine — if you took a Team over, you bind your own.
+`get_team_state` shows which machine you have bound, which is worth checking after a reattachment: your context is empty but the binding survived, because it belongs to your human rather than to your session.
 
 The same rules as any forward apply: only services registered by a session whose occupancy is `running` in your Team. `stop_session`, `park_session`, and mechanical fail release them; a report does not. If the forward fails, check `get_team_state` for whether the owning session is still occupying before assuming a network problem.
 

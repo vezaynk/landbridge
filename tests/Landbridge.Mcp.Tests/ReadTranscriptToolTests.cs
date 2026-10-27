@@ -15,8 +15,9 @@ using ModelContextProtocol;
 namespace Landbridge.Mcp.Tests;
 
 /// <summary>
-/// <c>read_transcript</c> on the owning Lead: one bounded range of a session that is still
-/// running, refused for a session on another Team, and a tail when the offset is omitted.
+/// <c>read_transcript</c>: one bounded range of a session that is still running, refused
+/// when the session is not on the named Team, readable by another live Lead that names
+/// the session's Team, and a tail when the offset is omitted.
 /// The fake machine answers through the real sink, the same path Core uses.
 /// </summary>
 [Collection(PostgresCollection.Name)]
@@ -33,7 +34,7 @@ public sealed class ReadTranscriptToolTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task The_owning_lead_reads_a_live_transcript_and_another_team_cannot()
+    public async Task A_live_lead_reads_a_transcript_by_naming_the_sessions_team()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var team = TeamId.New();
@@ -64,6 +65,10 @@ public sealed class ReadTranscriptToolTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("not a session on this team", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(Secret, ex.Message, StringComparison.Ordinal);
         Assert.Equal(before, rig.Sent.Count);
+
+        var cross = await tools.ReadTranscript(
+            session.Value.ToString("D"), team.Value.ToString("D"), CancellationToken.None);
+        Assert.Contains(Secret, cross.Text);
 
         SignIn(http, lead);
         var inventory = await tools.ReadTranscript(

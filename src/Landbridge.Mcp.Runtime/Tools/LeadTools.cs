@@ -21,8 +21,9 @@ namespace Landbridge.Mcp.Tools;
 ///
 /// The caller is never a parameter — it comes from the authenticated token
 /// (HttpContext.User → Lead factory), exactly like <see cref="WorkerTools"/>.
-/// The factory owns Teams via <c>create_team</c>; other tools take a
-/// <c>teamId</c> this credential owns. Each tool is a thin adapter over an
+/// The factory creates Teams via <c>create_team</c>; other tools take a
+/// <c>teamId</c>. Any live Lead credential may pass an id that names a Team.
+/// Each tool is a thin adapter over an
 /// already-tested <see cref="SessionStore"/> transition; the store and the engine
 /// re-check authority (§9 check 3 for creation, the §7 human-confirmation gate
 /// for review, disposition for cancel), so nothing here interprets session content.
@@ -127,26 +128,24 @@ public sealed class LeadTools(
             "issue a new Lead token from your human session (dashboard Connect) and try again.");
 
     /// <summary>
-    /// Resolve the engine actor for <paramref name="teamId"/> after an ownership
-    /// check. The factory token is not itself a Team; the id is the capability.
+    /// Resolve the engine actor for <paramref name="teamId"/>. The factory token
+    /// is not itself a Team; the id is the address.
     /// </summary>
     private async Task<LeadClaim> LeadOn(string teamId, CancellationToken ct)
     {
-        var lead = LeadPrincipal;
-        var team = await ids.TryTeamAsync(teamId, ct)
-            ?? throw new McpException(
-                "teamId is required and must be a team id you minted with create_team, or one a human gave you.");
-        if (!await tokens.OwnsTeamAsync(lead.CredentialId, team, ct))
+        _ = LeadPrincipal;
+        var team = await ids.TryTeamAsync(teamId, ct);
+        if (team is null || !await tokens.TeamExistsAsync(team.Value, ct))
             throw new McpException(
-                "this lead credential does not own that team; create_team or use a team id you were given.");
-        return new LeadClaim(team);
+                "teamId is required and must name a team on this plane. A human can give you one, or call create_team.");
+        return new LeadClaim(team.Value);
     }
 
     [McpServerTool(Name = "create_team"),
-     Description("Mint a new Team owned by this Lead token and return its id. Use that id as teamId on " +
-                 "every other Lead tool. Call this when a human did not give you a team id. Do not write " +
-                 "the id into the project — it is the capability that keeps parallel agents on this " +
-                 "token from sharing a Team. There is no list of Teams.")]
+     Description("Mint a new Team and return its id. Use that id as teamId on every other Lead tool. " +
+                 "Any live Lead credential can address a Team by its id. Call this when a human did not " +
+                 "give you a team id. Do not write the id into the project — parallel agents on this " +
+                 "token stay apart by not knowing each other's id. There is no list of Teams.")]
     public async Task<string> CreateTeam(CancellationToken ct = default)
     {
         if (await CorePostAsync("/core/v1/create-team", new { }, ct) is { } viaCore)
@@ -641,7 +640,7 @@ public sealed class LeadTools(
     public async Task<string> BindMachine(
         [Description("The enrolled machine's id (allocated name, or uuid). On the box you are sitting at, GET http://127.0.0.1:19378 — landbridged answers with it.")]
         string machineId,
-        [Description("A Team this Lead owns. From create_team, or a human-supplied id.")]
+        [Description("The Team whose view should show this binding. From create_team, or a human-supplied id.")]
         string teamId,
         CancellationToken ct)
     {
@@ -669,7 +668,7 @@ public sealed class LeadTools(
                  "forwards are not severed — a splice lives until its owning session is closed — but no " +
                  "new open_lead_forward will resolve until a machine is bound again.")]
     public async Task<string> UnbindMachine(
-        [Description("A Team this Lead owns. From create_team, or a human-supplied id.")]
+        [Description("A team id that names a Team. From create_team, or a human-supplied id.")]
         string teamId,
         CancellationToken ct)
     {
@@ -736,7 +735,7 @@ public sealed class LeadTools(
                 "instead — that needs no landbridged on your human's side.");
 
         // 2. Issue the grant. Same check-11 gate as a worker's open_forward, scoped
-        // to a Team this factory owns (§9 check 11, §8.2).
+        // to the Team named by teamId (§9 check 11, §8.2).
         var issued = await grants.IssueForLeadAsync(actor.Team, serviceName, ct) switch
         {
             RelayGrantResult.Issued i => i,

@@ -104,7 +104,7 @@ instantly — `TokenService` stores only a SHA-256 hash and validates by lookup:
 | Identity | Token prefix | Obtained | Authorizes |
 |---|---|---|---|
 | Human | `lbr_h_` | OAuth code flow / operator passphrase | create Teams, confirm verdicts, dashboard |
-| Lead | `lbr_l_` | claimed as a factory under a human session | `create_team`; create tasks, answer, close sessions (`stop_session`), and read one transcript range (`read_transcript`) on a `teamId` that factory owns |
+| Lead | `lbr_l_` | claimed as a factory under a human session | `create_team`; create tasks, answer, close sessions (`stop_session`), and read one transcript range (`read_transcript`) on a `teamId` that names a Team |
 | Machine (`landbridged`) | `lbr_m_` / `lbr_r_` | enrollment token → client credentials | runner channel |
 | Worker | `lbr_w_` | **minted at dispatch** | MCP worker tools, scoped to `{team, task, worker, instance}` |
 
@@ -334,7 +334,7 @@ readiness/back-pressure, heartbeat age, running tasks with owning Team), the
 task, whether a Lead is attached — doubles as the §4 reattachment surface), and
 the **human inbox** (everything waiting on a person: open questions, tasks
 awaiting review, parked tasks, and the auth failures still blocking a live task).
-Lead takeovers, machine reboots, and evictions land in the event log. The dashboard's
+Lead claims and releases, machine reboots, and evictions land in the event log. The dashboard's
 writes are few, and all but the preview mint are human-only: answering a permission
 request, and **Revoke machine** — the §5/§13 un-trust action, which is the only surface
 the operation has (see above). Both, plus login/logout, are same-origin only

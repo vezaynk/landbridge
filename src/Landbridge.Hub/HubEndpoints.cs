@@ -177,7 +177,8 @@ public static class HubEndpoints
         var q = db.HubQueue.AsNoTracking().Where(r => r.Topic == topic && r.Id > after);
         if (entityId is { } id)
             q = q.Where(r => r.EntityId == id);
-        q = caller.ScopeQueue(db, q, topic);
+        else
+            q = caller.ScopeQueue(db, q, topic);
         await foreach (var row in q.OrderBy(r => r.Id).AsAsyncEnumerable().WithCancellation(ct))
             yield return row;
     }

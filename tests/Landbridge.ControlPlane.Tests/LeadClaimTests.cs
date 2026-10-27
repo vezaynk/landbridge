@@ -8,8 +8,8 @@ namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The human → Lead credential path of §4/§5: a human session issues a factory
-/// token and assigns a Team, one owner per Team is a conditional assign, and
-/// takeover evicts the incumbent with an explicit, logged reason.
+/// token and records a Team on that factory's list. A second token for a Team
+/// that already has a live factory is refused. The incumbent stays live.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
@@ -85,7 +85,7 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Second_claimant_is_refused_without_takeover_and_shown_the_holder()
+    public async Task Second_claimant_is_refused_and_shown_the_holder()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
@@ -94,46 +94,12 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
         var alice = await tokens.IssueHumanSessionAsync();
         var bob = await tokens.IssueHumanSessionAsync();
 
-        await tokens.ClaimLeadAsync(alice.Token, Team);
+        var aliceClaim = Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(alice.Token, Team));
         var refused = Assert.IsType<LeadClaimResult.Refused>(await tokens.ClaimLeadAsync(bob.Token, Team));
 
-        // §4: an actively-held Team shows who holds it before a takeover decision.
         Assert.Equal(alice.CredentialId, refused.HeldByHuman);
-    }
-
-    [SkippableFact]
-    public async Task Takeover_evicts_the_incumbent_who_learns_who_and_when_and_the_event_is_logged()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        await using var db = pg.NewContext();
-        var clock = new FakeTimeProvider();
-        var tokens = new TokenService(db, clock);
-
-        var alice = await tokens.IssueHumanSessionAsync();
-        var bob = await tokens.IssueHumanSessionAsync();
-
-        var aliceClaim = Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(alice.Token, Team));
         Assert.IsType<Principal.Lead>(await tokens.ValidateAsync(aliceClaim.Token.Token));
-
-        clock.Advance(TimeSpan.FromMinutes(5));
-        var evictionTime = clock.GetUtcNow();
-        var bobClaim = Assert.IsType<LeadClaimResult.Claimed>(
-            await tokens.ClaimLeadAsync(bob.Token, Team, takeover: true));
-
-        // The successor is a live lead.
-        Assert.IsType<Principal.Lead>(await tokens.ValidateAsync(bobClaim.Token.Token));
-
-        // §4: the evicted session's next call is not a bare null — it resolves to
-        // an explicit reason naming who evicted it and when.
-        var evicted = Assert.IsType<Principal.EvictedLead>(await tokens.ValidateAsync(aliceClaim.Token.Token));
-        Assert.Equal(Team, evicted.Team);
-        Assert.Equal(bob.CredentialId, evicted.EvictedByHuman);
-        Assert.Equal(evictionTime, evicted.EvictedAt);
-
-        // §4/§12: every takeover is a logged event, with both parties named.
-        var takeover = await db.LeadEvents.AsNoTracking().SingleAsync(e => e.Kind == LeadEventKind.TakenOver);
-        Assert.Equal(bob.CredentialId, takeover.HumanId);
-        Assert.Equal(alice.CredentialId, takeover.PriorHumanId);
+        Assert.False(await db.LeadEvents.AsNoTracking().AnyAsync(e => e.Kind == LeadEventKind.TakenOver));
     }
 
     [SkippableFact]
@@ -246,6 +212,7 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
         var minted = await tokens.CreateTeamAsync(a.Token.CredentialId);
         Assert.True(await tokens.OwnsTeamAsync(a.Token.CredentialId, minted));
         Assert.False(await tokens.OwnsTeamAsync(b.Token.CredentialId, minted));
+        Assert.True(await tokens.TeamExistsAsync(minted));
         Assert.Contains(minted.Value, await tokens.OwnedTeamIdsAsync(a.Token.CredentialId));
         Assert.DoesNotContain(minted.Value, await tokens.OwnedTeamIdsAsync(b.Token.CredentialId));
         var slug = await tokens.FindTeamSlugAsync(minted.Value);
